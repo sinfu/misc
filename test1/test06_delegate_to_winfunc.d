@@ -9,7 +9,7 @@ read	delta
 3072	1024
 4096	1024
 5120	1024
-5475	355
+5515	395
 Finished!
 --------------------
  */
@@ -151,6 +151,8 @@ version (X86)
                 PAGE_EXECUTE_READWRITE);
         if (xpage == null)
             throw new Exception("VirtualAlloc");
+
+        GC.addRange(xpage, CODE_SIZE);
 
         code = (cast(ubyte*) xpage)[0 .. CODE_SIZE];
         code[] = TEMPLATE_CODE_WINDOWS[];
