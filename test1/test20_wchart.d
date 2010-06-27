@@ -25,7 +25,7 @@ void main()
 
     char[] mbs;
     auto r = appender(&mbs);
-    auto w = NarrowWriter!(typeof(r))(r);
+    auto w = NarrowWriter!(typeof(r))(r, "?");
     formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
     stdout.rawWrite(mbs);
@@ -183,6 +183,7 @@ private
     extern(C) @system
     {
         int    mbsinit(in mbstate_t* ps);
+        int    mbrlen(in char* s, size_t n, mbstate_t* ps);
         size_t mbrtowc(wchar_t* pwc, in char* s, size_t n, mbstate_t* ps);
         size_t wcrtomb(char* s, wchar_t wc, mbstate_t* ps);
         size_t mbsrtowcs(wchar_t* dst, in char** src, size_t len, mbstate_t* ps);
@@ -190,10 +191,20 @@ private
 //      size_t mbsnrtowcs(wchar_t* dst, in char** src, size_t nms, size_t len, mbstate_t* ps);
 //      size_t wcsnrtombs(char* dst, in wchar_t** src, size_t nwc, size_t len, mbstate_t* ps);
 
+        int    mblen(in char* s, size_t n);
         int    mbtowc(wchar_t* pwc, in char* s, size_t n);
         int    wctomb(char*s, wchar_t wc);
         size_t mbstowcs(wchar_t* pwcs, in char* s, size_t n);
         size_t wcstombs(char* s, in wchar_t* pwcs, size_t n);
+    }
+
+    unittest
+    {
+        version (HAVE_MBSTATE)
+        {
+            mbstate_t mbst = mbstate_t.init;
+            assert(mbsinit(&mbst));
+        }
     }
 
     enum size_t MB_LEN_MAX = 16;
@@ -243,7 +254,7 @@ version (Posix) private
 import std.algorithm : swap;
 import std.contracts;
 import std.conv;
-import std.string;
+import std.range;
 import std.utf;
 
 import core.stdc.errno;
@@ -280,25 +291,76 @@ unittest
 // Unicode --> multibyte
 //----------------------------------------------------------------------------//
 
-/*
+/**
  * An output range which converts UTF string or Unicode code point to the
  * corresponding multibyte character sequence in the current locale encoding
- * and puts the multibyte characters to another output range Sink.
+ * and puts the multibyte characters to another output range $(D Sink).
  */
 struct NarrowWriter(Sink)
+    if (isOutputRange!(Sink, char[]))
 {
-    this(Sink sink/+, immutable(char)[] replacement = null+/)
+    /**
+     * Constructs a $(D NarrowWriter) object.
+     *
+     * Params:
+     *   sink =
+     *      An output range of type $(D Sink) where to put converted
+     *      multibyte character sequence.
+     *   replacement =
+     *      A valid multibyte string to use when a Unicode character cannot
+     *      be represented in the current locale.  $(D NarrowWriter) will
+     *      throw an exception on any non-representable character if this
+     *      parameter is $(D null).
+     *
+     * Throws:
+     *  - $(D Exception) if $(D replacement) is not $(D null) and it does
+     *    not represent a valid multibyte string in the current locale.
+     *
+     *  - $(D Exception) if the constructor could not figure out what the
+     *    current locale encoding is.
+     */
+    this(Sink sink, immutable(char)[] replacement = null)
     {
         swap(sink_, sink);
         context_ = new Context;
 
-        version (USE_LIBC_WCHAR)
+        // Validate the replacement string.
+        if (replacement)
         {
             version (HAVE_MBSTATE)
             {
-                memset(&context_.narrowen, 0, mbstate_t.sizeof);
-                assert(mbsinit(&context_.narrowen));
+                mbstate_t mbst = mbstate_t.init;
             }
+            else
+            {
+                mbtowc(null, null, 0);
+                scope(exit) mbtowc(null, null, 0);
+            }
+            for (size_t i = 0; i < replacement.length; )
+            {
+                version (HAVE_MBSTATE)
+                    auto n = mbrlen(&replacement[i],
+                            replacement.length - i, &mbst);
+                else
+                    auto n = mblen(&replacement[i],
+                            replacement.length - i);
+                enforce(n != -1, "The replacement string is not "
+                    ~"a valid multibyte character sequence in the "
+                    ~"current locale");
+                if (n == 0)
+                    replacement = replacement[0 .. i];
+                i += n;
+            }
+        }
+        replacement_ = replacement;
+
+        // Initialize the convertion state.
+        version (USE_LIBC_WCHAR)
+        {
+            version (HAVE_MBSTATE)
+                context_.narrowen = mbstate_t.init;
+            else
+                wctomb(null, 0);
         }
         else version (USE_ICONV)
         {
@@ -309,8 +371,8 @@ struct NarrowWriter(Sink)
                 codeset = "CP932";
             context_.mbencode = iconv_open(codeset, ICONV_DSTRING);
             errnoEnforce(context_.mbencode != cast(iconv_t) -1,
-                "Cannot figure out how to convert Unicode to multibyte"
-                ~" character encoding");
+                "Cannot figure out how to convert Unicode to multibyte "
+                ~"character encoding");
         }
         else static assert(0);
     }
@@ -362,7 +424,7 @@ struct NarrowWriter(Sink)
 
 
     /**
-     * Converts a Unicode code point ch to a multibyte character in
+     * Converts a Unicode code point to a multibyte character in
      * the current locale encoding and puts it to the sink.
      */
     void put(dchar ch)
@@ -371,6 +433,7 @@ struct NarrowWriter(Sink)
         {
             static if (is(wchar_t == wchar))
             {
+                // dchar --> wchar[2] --> multibyte
                 char[MB_LEN_MAX] mbuf = void;
                 size_t mbLen;
                 wchar[3] wbuf = void;
@@ -382,9 +445,26 @@ struct NarrowWriter(Sink)
                             &context_.narrowen);
                 else
                     mbLen = wcstombs(mbuf.ptr, wbuf.ptr, mbuf.length);
-                errnoEnforce(0 < mbLen && mbLen <= mbuf.length);
+                errnoEnforce(mbLen != -1 || (errno == EILSEQ && replacement_),
+                    "Cannot convert a Unicode character to multibyte "
+                    ~"character sequence");
 
-                sink_.put(mbuf[0 .. mbLen]);
+                if (mbLen == -1)
+                {
+                    if (replacement_.length > 0)
+                        sink_.put(replacement_);
+                    // Here, the shift state is undefined; reset it to
+                    // the initial state.
+                    version (HAVE_MBSTATE)
+                        context_.narrowen = mbstate_t.init;
+                    else
+                        wctomb(null, 0);
+                }
+                else
+                {
+                    assert(0 < mbLen && mbLen <= mbuf.length);
+                    sink_.put(mbuf[0 .. mbLen]);
+                }
             }
             else static if (is(wchar_t == dchar))
             {
@@ -392,12 +472,29 @@ struct NarrowWriter(Sink)
                 size_t mbLen;
 
                 version (HAVE_MBSTATE)
-                    mbLen = wcrtomb(mbuf.ptr, c, &context_.narrowen);
+                    mbLen = wcrtomb(mbuf.ptr, ch, &context_.narrowen);
                 else
-                    mbLen = wctomb(mbuf.ptr, c);
-                errnoEnforce(0 < mbLen && mbLen <= mbuf.length);
+                    mbLen = wctomb(mbuf.ptr, ch);
+                errnoEnforce(mbLen != -1 || (errno == EILSEQ && replacement_),
+                    "Cannot convert a Unicode character to multibyte "
+                    ~"character sequence");
 
-                sink_.put(mbuf[0 .. mbLen]);
+                if (mbLen == -1)
+                {
+                    if (replacement_.length > 0)
+                        sink_.put(replacement_);
+                    // Here, the shift state is undefined; reset it to
+                    // the initial state.
+                    version (HAVE_MBSTATE)
+                        context_.narrowen = mbstate_t.init;
+                    else
+                        wctomb(null, 0);
+                }
+                else
+                {
+                    assert(0 < mbLen && mbLen <= mbuf.length);
+                    sink_.put(mbuf[0 .. mbLen]);
+                }
             }
             else static assert(0);
         }
@@ -412,20 +509,30 @@ struct NarrowWriter(Sink)
 
             auto stat = iconv(context_.mbencode,
                     &pchar, &charLeft, &pbuf, &bufLeft);
-            errnoEnforce(stat != -1);
+            errnoEnforce(stat != -1 || (errno == EILSEQ && replacement_),
+                "Cannot convert a Unicode character to multibyte "
+                ~"character sequence");
 
-            sink_.put(mbuf[0 .. $ - bufLeft]);
+            if (stat == -1)
+            {
+                if (replacement_.length > 0)
+                    sink_.put(replacement_);
+            }
+            else
+            {
+                assert(bufLeft < mbuf.length);
+                sink_.put(mbuf[0 .. $ - bufLeft]);
+            }
         }
         else static assert(0);
     }
 
 
     //----------------------------------------------------------------//
-    // internal
-    //----------------------------------------------------------------//
 private:
-    Sink     sink_;
+    Sink sink_;
     Context* context_;
+    immutable(char)[] replacement_;
 
     struct Context
     {
@@ -485,18 +592,44 @@ unittest
 // Unicode --> wchar_t
 //----------------------------------------------------------------------------//
 
-/*
+/**
  * An output range which converts UTF string or Unicode code point to the
  * corresponding wide character sequence in the current locale code set
- * and puts the wide characters to another output range Sink.
+ * and puts the wide characters to another output range $(D Sink).
  */
 struct WideWriter(Sink)
 {
-    this(Sink sink/+, immutable(wchar_t)[] replacement = null+/)
+    /**
+     * Constructs a $(D WideWriter) object.
+     *
+     * Params:
+     *   sink =
+     *      An output range of type $(D Sink) where to put converted
+     *      multibyte character sequence.
+     *   replacement =
+     *      A valid multibyte string to use when a Unicode character cannot
+     *      be represented in the current locale.  $(D NarrowWriter) will
+     *      throw an exception on any non-representable character if this
+     *      parameter is $(D null).
+     *
+     * Throws:
+     *  - $(D Exception) if $(D replacement) is not $(D null) and it does
+     *    not represent a valid multibyte string in the current locale.
+     *
+     *  - $(D Exception) if the constructor could not figure out what the
+     *    current locale encoding is.
+     *
+     * Note:
+     * $(D replacement) is a multibyte string because it's hard to write
+     * wide character sequence on some CSI (codeset independent) platforms.
+     */
+    this(Sink sink, immutable(char)[] replacement = null)
     {
         version (USE_LIBC_WCHAR)
         {
             swap(sink_, sink);
+            // Unicode-to-Unicode; replacement is unnecessary.
+            cast(void) replacement;
         }
         else
         {
@@ -505,7 +638,7 @@ struct WideWriter(Sink)
             //            iconv              mbrtowc
             //   Unicode -------> multibyte ---------> wide
             alias .Widener!(Sink) Widener;
-            proxy_ = NarrowWriter!(Widener)(Widener(sink));
+            proxy_ = NarrowWriter!(Widener)(Widener(sink), replacement);
         }
     }
 
@@ -570,7 +703,7 @@ struct WideWriter(Sink)
 
 
     /**
-     * Converts a Unicode code point ch to a wide character in the
+     * Converts a Unicode code point to a wide character in the
      * current locale code set and puts it to the sink.
      */
     void put(dchar ch)
@@ -645,8 +778,8 @@ unittest
 
 
 /*
- * Convenience range to convert multibyte string to wide string.  This
- * is just a thin-wrapper against the mbrtowc() function.
+ * [internal]  Convenience range to convert multibyte string to wide
+ * string.  This is just a thin-wrapper against mbrtowc().
  */
 private struct Widener(Sink)
 {
@@ -655,10 +788,9 @@ private struct Widener(Sink)
     this(Sink sink)
     {
         version (HAVE_MBSTATE)
-        {
-            memset(&widen_, 0, mbstate_t.sizeof);
-            assert(mbsinit(&widen_));
-        }
+            widen_ = mbstate_t.init;
+        else
+            mbtowc(null, null, 0);
         swap(sink_, sink);
     }
 
