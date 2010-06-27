@@ -175,11 +175,13 @@ private
         size_t wcrtomb(char* s, wchar_t wc, mbstate_t* ps);
         size_t mbsrtowcs(wchar_t* dst, in char** src, size_t len, mbstate_t* ps);
         size_t wcsrtombs(char* dst, in wchar_t** src, size_t len, mbstate_t* ps);
+//      size_t mbsnrtowcs(wchar_t* dst, in char** src, size_t nms, size_t len, mbstate_t* ps);
+//      size_t wcsnrtombs(char* dst, in wchar_t** src, size_t nwc, size_t len, mbstate_t* ps);
 
-        int     mbtowc(wchar_t* pwc, in char* s, size_t n);
-        int     wctomb(char*s, wchar_t wc);
-        size_t  mbstowcs(wchar_t* pwcs, in char* s, size_t n);
-        size_t  wcstombs(char* s, in wchar_t* pwcs, size_t n);
+        int    mbtowc(wchar_t* pwc, in char* s, size_t n);
+        int    wctomb(char*s, wchar_t wc);
+        size_t mbstowcs(wchar_t* pwcs, in char* s, size_t n);
+        size_t wcstombs(char* s, in wchar_t* pwcs, size_t n);
     }
 
     enum size_t MB_LEN_MAX = 8;
@@ -189,6 +191,7 @@ private
 
 //:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
 
+import std.algorithm : swap;
 import std.contracts;
 import std.utf;
 
@@ -227,19 +230,22 @@ unittest
 
 /*
  * An output range which converts UTF string or Unicode code point to the
- * corresponding multibyte character sequence and puts the multibyte
- * characters to another output range Sink.
+ * corresponding multibyte character sequence in the current locale encoding
+ * and puts the multibyte characters to another output range Sink.
  */
 struct NarrowWriter(Sink)
 {
-    this(Sink sink, immutable(char)[] replacement = null)
+    this(Sink sink/+, immutable(char)[] replacement = null+/)
     {
+        swap(sink_, sink);
+        context_ = new Context;
+
         version (USE_LIBC_WCHAR)
         {
             version (HAVE_MBSTATE)
             {
-                memset(&narrowen_, 0, narrowen_.sizeof);
-                assert(mbsinit(&narrowen_));
+                memset(&context_.narrowen, 0, mbstate_t.sizeof);
+                assert(mbsinit(&context_.narrowen));
             }
         }
         else version (USE_ICONV)
@@ -257,8 +263,8 @@ struct NarrowWriter(Sink)
             {
                 native = "ASCII"; // or UTF-8?
             }
-            mbencode_ = iconv_open(native, ICONV_DSTRING);
-            errnoEnforce(mbencode_ != cast(iconv_t) -1,
+            context_.mbencode = iconv_open(native, ICONV_DSTRING);
+            errnoEnforce(context_.mbencode != cast(iconv_t) -1,
                 "iconv does not support convertion between Unicode "
                 ~"and the current locale encoding");
         }
@@ -266,14 +272,21 @@ struct NarrowWriter(Sink)
         {
             static assert(0);
         }
-        sink_ = sink;
+    }
+
+    this(this)
+    {
+        if (context_)
+            ++context_.refCount;
     }
 
     ~this()
     {
-        // TODO [CRITICAL]: 山椒カウント or コピー禁止
-        version (USE_ICONV)
-            errnoEnforce(iconv_close(mbencode_) != -1);
+        if (context_ && --context_.refCount == 0)
+        {
+            version (USE_ICONV)
+                errnoEnforce(iconv_close(context_.mbencode) != -1);
+        }
     }
 
 
@@ -304,9 +317,6 @@ struct NarrowWriter(Sink)
     {
         foreach (dchar ch; str)
             put(ch);
-
-        // TODO: wcsnrtombs() があるシステムなら一気に変換できる
-        // TODO: iconv でも同じく
     }
 
 
@@ -328,7 +338,7 @@ struct NarrowWriter(Sink)
 
                 version (HAVE_MBSTATE)
                     mbLen = wcsrtombs(mbuf.ptr, wbuf.ptr, mbuf.length,
-                            &narrowen_);
+                            &context_.narrowen);
                 else
                     mbLen = wcstombs(mbuf.ptr, wbuf.ptr, mbuf.length);
                 errnoEnforce(0 < mbLen && mbLen <= mbuf.length);
@@ -341,7 +351,7 @@ struct NarrowWriter(Sink)
                 size_t mbLen;
 
                 version (HAVE_MBSTATE)
-                    mbLen = wcrtomb(mbuf.ptr, c, &narrowen_);
+                    mbLen = wcrtomb(mbuf.ptr, c, &context_.narrowen);
                 else
                     mbLen = wctomb(mbuf.ptr, c);
                 errnoEnforce(0 < mbLen && mbLen <= mbuf.length);
@@ -359,7 +369,7 @@ struct NarrowWriter(Sink)
             auto pbuf     = cast(ubyte*) mbuf.ptr;
             auto bufLeft  = mbuf.length;
 
-            auto stat = iconv(mbencode_,
+            auto stat = iconv(context_.mbencode,
                     &pchar, &charLeft, &pbuf, &bufLeft);
             errnoEnforce(stat != -1);
 
@@ -370,17 +380,24 @@ struct NarrowWriter(Sink)
 
 
     //----------------------------------------------------------------//
+    // internal
+    //----------------------------------------------------------------//
 private:
-    Sink sink_;
+    Sink     sink_;
+    Context* context_;
 
-    version (USE_LIBC_WCHAR)
+    struct Context
     {
-        mbstate_t narrowen_;    // wide(Unicode) -> multibyte
-    }
-    else version (USE_ICONV)
-    {
-        iconv_t   mbencode_;    // Unicode -> multibyte
-        mbstate_t widen_;       // multibyte -> wide
+        version (USE_LIBC_WCHAR)
+        {
+            version (HAVE_MBSTATE)
+                mbstate_t narrowen; // wide(Unicode) -> multibyte
+        }
+        else version (USE_ICONV)
+        {
+            iconv_t mbencode;       // Unicode -> multibyte
+        }
+        uint refCount = 1;
     }
 }
 
@@ -429,20 +446,20 @@ unittest
 
 /*
  * An output range which converts UTF string or Unicode code point to the
- * corresponding wide character sequence and puts the wide characters to another
- * output range Sink.
+ * corresponding wide character sequence in the current locale code set
+ * and puts the wide characters to another output range Sink.
  */
 struct WideWriter(Sink)
 {
-    this(Sink sink, immutable(wchar_t)[] replacement = null)
+    this(Sink sink/+, immutable(wchar_t)[] replacement = null+/)
     {
         version (USE_LIBC_WCHAR)
         {
-            sink_ = sink;
+            swap(sink_, sink);
         }
         else
         {
-            // Convertion will be done as follows under codeset
+            // Convertion will be done as follows under code set
             // independent systems:
             //            iconv              mbrtowc
             //   Unicode -------> multibyte ---------> wide
@@ -592,16 +609,22 @@ unittest
  */
 private struct Widener(Sink)
 {
+    @disable this(this) { assert(0); } // mbstate must not be copied
+
     this(Sink sink)
     {
         version (HAVE_MBSTATE)
         {
-            memset(&widen_, 0, widen_.sizeof);
+            memset(&widen_, 0, mbstate_t.sizeof);
             assert(mbsinit(&widen_));
         }
-        sink_ = sink;
+        swap(sink_, sink);
     }
 
+    /*
+     * Converts (possibly incomplete) multibyte character sequence mbs
+     * to wide characters and puts them onto the sink.
+     */
     void put(in char[] mbs)
     {
         const(char)[] rest = mbs;
@@ -619,8 +642,8 @@ private struct Widener(Sink)
 
             if (stat == cast(size_t) -2)
             {
-                break; // consumed entire rest as a part of control sequence
-                       // XXX ??
+                break; // consumed entire rest as a part of MB char
+                       // sequence and the convertion state changed
             }
             else if (stat == 0)
             {
@@ -628,16 +651,16 @@ private struct Widener(Sink)
             }
             else
             {
-                sink_.put(wc);
+                assert(stat <= rest.length);
                 rest = rest[stat .. $];
+                sink_.put(wc);
             }
         }
-        // Note: POSIX.2008 拡張 mbsnrtowcs() 使えばもう少し効率よくなる
     }
 
 private:
+    Sink sink_;
     version (HAVE_MBSTATE)
         mbstate_t widen_;
-    Sink sink_;
 }
 
