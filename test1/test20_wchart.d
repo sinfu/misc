@@ -135,7 +135,7 @@ private
         struct mbstate_t
         {
             int     count;
-            wchar_t value;      // XXX wint_t
+            wchar_t value = 0;   // XXX wint_t
         }
     }
     else version (OSX)
@@ -202,6 +202,7 @@ private
     {
         version (HAVE_MBSTATE)
         {
+            // Verify if mbstate_t.init represents the initial state.
             mbstate_t mbst = mbstate_t.init;
             assert(mbsinit(&mbst));
         }
@@ -605,10 +606,10 @@ struct WideWriter(Sink)
      * Params:
      *   sink =
      *      An output range of type $(D Sink) where to put converted
-     *      multibyte character sequence.
+     *      wide character sequence.
      *   replacement =
      *      A valid multibyte string to use when a Unicode character cannot
-     *      be represented in the current locale.  $(D NarrowWriter) will
+     *      be represented in the current locale.  $(D WideWriter) will
      *      throw an exception on any non-representable character if this
      *      parameter is $(D null).
      *
