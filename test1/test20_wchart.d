@@ -9,6 +9,8 @@
 
  */
 
+debug = WITH_LIBICONV;
+
 import core.stdc.locale;
 
 import std.array;
@@ -54,18 +56,27 @@ else version (OSX)
 else version (FreeBSD)
 {
     version = HAVE_MBSTATE;
-    version = HAVE_ICONV;       // 近いうちに来る
-    pragma(lib, "iconv");
+//  version = HAVE_ICONV;       // Citrus
+
+    debug (WITH_LIBICONV)
+    {
+        version = HAVE_ICONV;
+        pragma(lib, "iconv");
+    }
+}
+/+
+else version (NetBSD)
+{
+    version = HAVE_MBSTATE;
+    version = HAVE_ICONV;
 }
 else version (Solaris)
 {
     version = HAVE_MBSTATE;
     version = HAVE_ICONV;
 }
-else
-{
-    static assert(0);
-}
++/
+else static assert(0);
 
 
 //----------------------------------------------------------------------------//
@@ -81,7 +92,7 @@ else version (HAVE_ICONV)
     version = USE_ICONV;
 
     // druntime core.sys.posix.iconv: なし
-    private extern(C)
+    private extern(C) @system
     {
         typedef int iconv_t = -1; // XXX 適当
         iconv_t iconv_open(in char* tocode, in char* fromcode);
@@ -89,14 +100,10 @@ else version (HAVE_ICONV)
         int iconv_close(iconv_t cd);
     }
 }
-else
-{
-    static assert(0);
-}
+else static assert(0);
 
 private
 {
-    // マニ定数はリテラルと同じくカメレオン型なので char* に渡してよい
     version (LittleEndian)
     {
         enum ICONV_WSTRING = "UTF-16LE",
@@ -107,10 +114,7 @@ private
         enum ICONV_WSTRING = "UTF-16BE",
              ICONV_DSTRING = "UTF-32BE";
     }
-    else
-    {
-        static assert(0);
-    }
+    else static assert(0);
 }
 
 
@@ -139,8 +143,8 @@ private
         alias dchar wchar_t;
         union mbstate_t         // XXX ?
         {
-            ubyte[128] _mbstate8;
-            int        _mbstateL;
+            ubyte[128] __mbstate8;
+            long       _mbstateL;
         }
     }
     else version (FreeBSD)
@@ -148,8 +152,18 @@ private
         alias int wchar_t;
         union mbstate_t
         {
-            ubyte[128] _mbstate8;
-            int        _mbstateL;
+            ubyte[128] __mbstate8;
+            long       _mbstateL;
+        }
+    }
+    /+
+    else version (NetBSD)
+    {
+        alias int wchar_t;
+        union mbstate_t
+        {
+            long       __mbstateL;
+            ubyte[128] __mbstate8;
         }
     }
     else version (Solaris)
@@ -163,12 +177,10 @@ private
                 int [6] __filler;
         }
     }
-    else
-    {
-        static assert(0);
-    }
+    +/
+    else static assert(0);
 
-    extern(C)
+    extern(C) @system
     {
         int    mbsinit(in mbstate_t* ps);
         size_t mbrtowc(wchar_t* pwc, in char* s, size_t n, mbstate_t* ps);
@@ -184,8 +196,45 @@ private
         size_t wcstombs(char* s, in wchar_t* pwcs, size_t n);
     }
 
-    enum size_t MB_LEN_MAX = 8;
-        // 悪意の無い ISO-2022-JP-2 なら最大 6，余裕 +2
+    enum size_t MB_LEN_MAX = 16;
+}
+
+
+//----------------------------------------------------------------------------//
+// langinfo
+//----------------------------------------------------------------------------//
+
+version (Posix) private
+{
+    version (linux)
+    {
+        alias int nl_item;
+    }
+    else version (OSX)
+    {
+        alias int nl_item;
+    }
+    else version (FreeBSD)
+    {
+        alias int nl_item;
+        enum CODESET = 0;
+    }
+    else version (NetBSD)
+    {
+        alias int nl_item;
+        enum CODESET = 51;
+    }
+    else version (Solaris)
+    {
+        alias int nl_item;
+        enum CODESET = 49;
+    }
+    else static assert(0);
+
+    extern(C) @system
+    {
+        char* nl_langinfo(nl_item);
+    }
 }
 
 
@@ -193,11 +242,13 @@ private
 
 import std.algorithm : swap;
 import std.contracts;
+import std.conv;
+import std.string;
 import std.utf;
 
 import core.stdc.errno;
 import core.stdc.locale;
-import core.stdc.string : memset, strchr, strcmp;
+import core.stdc.string : memset, strcmp;
 
 version (unittest) import std.array : appender;
 
@@ -210,6 +261,7 @@ version (unittest) import std.array : appender;
 private size_t encodez(ref wchar[3] buf, dchar ch)
 {
     size_t n = std.utf.encode(*cast(wchar[2]*) &buf, ch);
+    assert(n <= 2);
     buf[n++] = 0;
     return n;
 }
@@ -250,28 +302,17 @@ struct NarrowWriter(Sink)
         }
         else version (USE_ICONV)
         {
-            // TODO: もっとマシな実装 (確実な方法はなさげ)
-            const(char)* native = strchr(setlocale(LC_CTYPE, null), '.');
-            if (native != null)
-            {
-                assert(*native == '.');
-                ++native;
-                if (strcmp(native, "PCK") == 0)
-                    native = "Shift_JIS";
-            }
-            else
-            {
-                native = "ASCII"; // or UTF-8?
-            }
-            context_.mbencode = iconv_open(native, ICONV_DSTRING);
+            const(char)* codeset = nl_langinfo(CODESET);
+            if (codeset == null || strcmp(codeset, "646") == 0)
+                codeset = "US-ASCII";
+            if (strcmp(codeset, "PCK") == 0)
+                codeset = "CP932";
+            context_.mbencode = iconv_open(codeset, ICONV_DSTRING);
             errnoEnforce(context_.mbencode != cast(iconv_t) -1,
-                "iconv does not support convertion between Unicode "
-                ~"and the current locale encoding");
+                "Cannot figure out how to convert Unicode to multibyte"
+                ~" character encoding");
         }
-        else
-        {
-            static assert(0);
-        }
+        else static assert(0);
     }
 
     this(this)
