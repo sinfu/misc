@@ -599,6 +599,7 @@ unittest
  * and puts the wide characters to another output range $(D Sink).
  */
 struct WideWriter(Sink)
+    if (isOutputRange!(Sink, wchar_t) && isOutputRange!(Sink, wchar_t[]))
 {
     /**
      * Constructs a $(D WideWriter) object.
