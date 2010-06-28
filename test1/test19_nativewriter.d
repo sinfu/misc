@@ -306,28 +306,23 @@ else version (linux)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (OSX)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (FreeBSD)
 {
-    version = WCHART_DCHAR;//XXX
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
 //  version = HAVE_ICONV;       // Citrus
 }
 /+
 else version (NetBSD)
 {
     version = HAVE_MBSTATE;
-//  version = HAVE_RANGED_MBWC; // not yet
     version = HAVE_ICONV;
 }
 else version (Solaris)
@@ -414,8 +409,7 @@ private
     }
     else version (FreeBSD)
     {
-        //alias int wchar_t;
-        alias dchar wchar_t;//XXX
+        alias int wchar_t;
         union mbstate_t
         {
             ubyte[128] __mbstate8;
@@ -557,16 +551,13 @@ else static assert(0);
 
 version (NarrowWriter_convertWithC)
 {
-    version (HAVE_RANGED_MBWC) version (WCHART_WCHAR)
-        version = NarrowWriter_wcsnrtombsForWstring;
-
-    version (HAVE_RANGED_MBWC) version (WCHART_DCHAR)
-        version = NarrowWriter_wcsnrtombsForDstring;
+    version (WCHART_WCHAR) version = NarrowWriter_wstringByChunk;
+    version (WCHART_DCHAR) version = NarrowWriter_dstringByChunk;
 }
 
-version (NarrowWriter_wcsnrtombsForWstring) version = NarrowWriter_preferWstring;
-version (NarrowWriter_wcsnrtombsForDstring) version = NarrowWriter_preferDstring;
-version (NarrowWriter_convertWithIconv)     version = NarrowWriter_preferDstring;
+version (NarrowWriter_wstringByChunk)   version = NarrowWriter_preferWstring;
+version (NarrowWriter_dstringByChunk)   version = NarrowWriter_preferDstring;
+version (NarrowWriter_convertWithIconv) version = NarrowWriter_preferDstring;
 
 
 /**
@@ -721,7 +712,7 @@ struct NarrowWriter(Sink)
                 put(dbuf[0 .. dsLen]);
             }
         }
-        else version (NarrowWriter_wcsnrtombsForWstring)
+        else version (NarrowWriter_wstringByChunk)
         {
             // Convert UTF-16 to multibyte by chunk using wcsnrtombs().
             for (const(wchar)[] inbuf = str; inbuf.length > 0; )
@@ -731,7 +722,25 @@ struct NarrowWriter(Sink)
 
                 const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
                         inbuf.length, mbuf.length, &context_.narrowen);
-                errnoEnforce(mbLen == -1); // TODO replacement
+                if (mbLen == -1)
+                {
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+
+                    // No way to get successfully-converted substring;
+                    // discard it and just output the replacement.
+                    sink_.put(replacement_);
+                    ++psrc;
+
+                    // The shift state is undefined; XXX reset.
+                    context_.narrowen = mbstate_t.init;
+                }
+                else
+                {
+                    // Output the converted string.
+                    sink_.put(mbuf[0 .. mbLen]);
+                }
 
                 sink_.put(mbuf[0 .. mbLen]);
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
@@ -757,7 +766,7 @@ struct NarrowWriter(Sink)
                 put(wbuf[0 .. wsLen]);
             }
         }
-        else version (NarrowWriter_wcsnrtombsForDstring)
+        else version (NarrowWriter_dstringByChunk)
         {
             // Convert UTF-32 to multibyte by chunk using wcsnrtombs().
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
@@ -767,9 +776,25 @@ struct NarrowWriter(Sink)
 
                 const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
                         inbuf.length, mbuf.length, &context_.narrowen);
-                errnoEnforce(mbLen != -1); // TODO replacement
+                if (mbLen == -1)
+                {
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
 
-                sink_.put(mbuf[0 .. mbLen]);
+                    // No way to get successfully-converted substring;
+                    // discard it and just output the replacement.
+                    sink_.put(replacement_);
+                    ++psrc;
+
+                    // The shift state is undefined; XXX reset.
+                    context_.narrowen = mbstate_t.init;
+                }
+                else
+                {
+                    // Output the converted string.
+                    sink_.put(mbuf[0 .. mbLen]);
+                }
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
         }
@@ -854,8 +879,7 @@ struct NarrowWriter(Sink)
                     if (replacement_.length > 0)
                         sink_.put(replacement_);
 
-                    // Here, the shift state is undefined; reset it to
-                    // the initial state.
+                    // The shift state is undefined; XXX reset.
                     version (HAVE_MBSTATE)
                         context_.narrowen = mbstate_t.init;
                     else
@@ -887,8 +911,7 @@ struct NarrowWriter(Sink)
                     if (replacement_.length > 0)
                         sink_.put(replacement_);
 
-                    // Here, the shift state is undefined; reset it to
-                    // the initial state.
+                    // The shift state is undefined; XXX reset.
                     version (HAVE_MBSTATE)
                         context_.narrowen = mbstate_t.init;
                     else
@@ -1009,7 +1032,7 @@ else
 {
     // First convert a Unicode character into multibyte character sequence.
     // Then widen it to obtain a wide character.  Uses NarrowWriter.
-    version = WideWriter_narrowenWiden;
+    version = WideWriter_widenNarrow;
 }
 
 version (WideWriter_passThruWstring) version = WideWriter_preferWstring;
@@ -1057,7 +1080,7 @@ struct WideWriter(Sink)
             cast(void) replacement;
             swap(sink_, sink);
         }
-        else version (WideWriter_narrowenWiden)
+        else version (WideWriter_widenNarrow)
         {
             // Convertion will be done as follows under code set
             // independent systems:
@@ -1098,7 +1121,7 @@ struct WideWriter(Sink)
                 put(dbuf[0 .. dsLen]);
             }
         }
-        else version (WideWriter_narrowenWiden)
+        else version (WideWriter_widenNarrow)
         {
             proxy_.put(str);
         }
@@ -1121,7 +1144,7 @@ struct WideWriter(Sink)
         {
             sink_.put(str);
         }
-        else version (WideWriter_narrowenWiden)
+        else version (WideWriter_widenNarrow)
         {
             proxy_.put(str);
         }
@@ -1144,7 +1167,7 @@ struct WideWriter(Sink)
         {
             sink_.put(str);
         }
-        else version (WideWriter_narrowenWiden)
+        else version (WideWriter_widenNarrow)
         {
             proxy_.put(str);
         }
@@ -1175,7 +1198,7 @@ struct WideWriter(Sink)
             }
             else static assert(0);
         }
-        else version (WideWriter_narrowenWiden)
+        else version (WideWriter_widenNarrow)
         {
             proxy_.put(ch);
         }
@@ -1189,7 +1212,7 @@ private:
     {
         Sink sink_;
     }
-    else version (WideWriter_narrowenWiden)
+    else version (WideWriter_widenNarrow)
     {
         NarrowWriter!(Widener!(Sink)) proxy_;
     }
