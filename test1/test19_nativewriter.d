@@ -17,7 +17,7 @@ void main()
     auto sink = stdout;
 
 //  fwide(sink.getFP(), -1);
-//  fwide(sink.getFP(),  1);
+    fwide(sink.getFP(),  1);
 
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
@@ -306,23 +306,27 @@ else version (linux)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (OSX)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (FreeBSD)
 {
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
 //  version = HAVE_ICONV;       // Citrus
 }
 /+
 else version (NetBSD)
 {
     version = HAVE_MBSTATE;
+//  version = HAVE_RANGED_MBWC; // not yet
     version = HAVE_ICONV;
 }
 else version (Solaris)
@@ -549,7 +553,7 @@ static assert(BUFFER_SIZE.mchars >= MB_LEN_MAX);
 else version (HAVE_ICONV)     version = NarrowWriter_convertWithIconv;
 else static assert(0);
 
-version (NarrowWriter_convertWithC)
+version (NarrowWriter_convertWithC) version (HAVE_RANGED_MBWC)
 {
     version (WCHART_WCHAR) version = NarrowWriter_wstringByChunk;
     version (WCHART_DCHAR) version = NarrowWriter_dstringByChunk;
@@ -1254,6 +1258,8 @@ unittest
 }
 
 
+//----------------------------------------------------------------------------//
+
 /*
  * [internal]  Convenience range to convert multibyte string to wide
  * string.  This is just a thin-wrapper against mbrtowc().
@@ -1278,35 +1284,54 @@ private struct Widener(Sink)
      */
     void put(in char[] mbs)
     {
-        const(char)[] rest = mbs;
-
-        // TODO: mbsnrtowcs
-
-        while (rest.length > 0)
+        version (HAVE_RANGED_MBWC)
         {
-            wchar_t wc;
-            size_t stat;
+            for (const(char)[] inbuf = mbs; inbuf.length > 0; )
+            {
+                wchar_t[BUFFER_SIZE.wchars] wbuf = void;
+                const(char)* psrc = inbuf.ptr;
 
-            version (HAVE_MBSTATE)
-                stat = mbrtowc(&wc, rest.ptr, rest.length, &widen_);
-            else
-                stat = mbtowc(&wc, rest.ptr, rest.length);
-            errnoEnforce(stat != cast(size_t) -1);
+                const wcLen = mbsnrtowcs(wbuf.ptr, &psrc, inbuf.length,
+                        wbuf.length, &widen_);
+                errnoEnforce(wcLen != -1);
 
-            if (stat == cast(size_t) -2)
-            {
-                break; // consumed entire rest as a part of MB char
-                       // sequence and the convertion state changed
+                // wcLen == 0 can happen if the multibyte string ends
+                // with an escape sequence.  In such case, the shift
+                // state is changed and no wide character is produced.
+                if (wcLen > 0)
+                    sink_.put(wbuf[0 .. wcLen]);
+
+                inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
-            else if (stat == 0)
+        }
+        else
+        {
+            for (const(char)[] rest = mbs; rest.length > 0)
             {
-                break; // XXX assuming the null character is the end
-            }
-            else
-            {
-                assert(stat <= rest.length);
-                rest = rest[stat .. $];
-                sink_.put(wc);
+                wchar_t wc;
+                size_t stat;
+
+                version (HAVE_MBSTATE)
+                    stat = mbrtowc(&wc, rest.ptr, rest.length, &widen_);
+                else
+                    stat = mbtowc(&wc, rest.ptr, rest.length);
+                errnoEnforce(stat != cast(size_t) -1);
+
+                if (stat == cast(size_t) -2)
+                {
+                    break; // consumed entire rest as a part of MB char
+                           // sequence and the convertion state changed
+                }
+                else if (stat == 0)
+                {
+                    break; // XXX assuming the null character is the end
+                }
+                else
+                {
+                    assert(stat <= rest.length);
+                    rest = rest[stat .. $];
+                    sink_.put(wc);
+                }
             }
         }
     }
