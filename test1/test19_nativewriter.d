@@ -10,72 +10,42 @@ void main()
 //  setlocale(LC_CTYPE, "ja_JP.SJIS");
 //  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
-    setlocale(LC_CTYPE, "");
     setlocale(LC_CTYPE, "ja_JP.UTF-8");
 
-    auto sink = File("a.txt", "w");
+//  auto sink = File("a.txt", "w");
 //  auto sink = stderr;
-//  auto sink = stdout;
+    auto sink = stdout;
 
-    fwide(sink.getFP(), -1);
+//  fwide(sink.getFP(), -1);
 //  fwide(sink.getFP(),  1);
 
     {
-        //auto w = LockingNativeTextWriter(sink, "<?>");
-        auto w = File.LockingTextWriter(sink);
-        formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
+        auto w = LockingNativeTextWriter(sink, "<?>");
+        //auto w = File.LockingTextWriter(sink);
+        //formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
-        foreach (i; 0 .. 1_000_000)
-        //foreach (i; 0 .. 10)
+        //foreach (i; 0 .. 1_000_000)
+        //foreach (i; 0 .. 100_000)
+        foreach (i; 0 .. 10)
             w.put("安倍川もち 生八つ橋 なごやん 雪の宿\n");
     }
     sink.writeln("...");
 }
 
-//------------------------------------------------------------
-// バッファリングを加えたときのテスト結果
-//------------------------------------------------------------
-
-// テスト用ライン "安倍川もち 生八つ橋 なごやん 雪の宿\n"
-
-// To xterm/tmux, UTF-8 52u/L, 100 000
-//
-// LockingNativeTextWriter
-// (narrow)  1.21s user 0.28s system 29% cpu 5.063 total
-// ( wide )  1.80s user 0.34s system 39% cpu 5.415 total
-//
-// LockingTextWriter
-// (narrow)  0.87s user 0.35s system 24% cpu 4.947 total
-// ( wide )  1.22s user 0.36s system 30% cpu 5.207 total
-
-// To file, UTF-8 52 u/L, 1 000 000
-//
-// LockingNativeTextWriter
-// (narrow)  2.30s user 0.21s system 97% cpu 2.582 total
-// ( wide )  5.63s user 0.19s system 99% cpu 5.838 total
-//
-// LockingTextWriter
-// (narrow)  0.96s user 0.20s system 65% cpu 1.764 total
-// ( wide )  2.65s user 0.19s system 99% cpu 2.858 total
-
-// UTF-8 ロケールでは LNTW/narrow == LTW/wide であることを考えると，
-// かなり優秀じゃないか? (LNTW/wide は多重変換だから仕方ない)
-
-//------------------------------------------------------------
-
 // use libiconv for debugging
 version (FreeBSD) debug = WITH_LIBICONV;
 
 
-//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
+////////////////////////////////////////////////////////////////////////////////
 // LockingNativeTextWriter
-//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
+////////////////////////////////////////////////////////////////////////////////
 
 import core.stdc.wchar_ : fwide;
 
 import std.algorithm;
 import std.contracts;
 import std.range;
+import std.traits;
 
 
 version (Windows) private
@@ -182,34 +152,17 @@ struct LockingNativeTextWriter
 
 
     //----------------------------------------------------------------//
+    // range primitive implementations
+    //----------------------------------------------------------------//
 
     /// Range primitive implementations.
-    void put(R)(R writeme)
-        if (is(ElementType!R : const(dchar)))
+    void put(S)(S writeme)
+        if (isSomeString!(S))
     {
         version (Windows)
         {
             if (useWinConsole_)
-            {
-                auto hconsole = osfhnd(file_.p.handle);
-                static if (is(R : const(wchar)[]))
-                {
-                    indirectWriteConsoleW(hconsole,
-                            writeme.ptr, writeme.length, null, null);
-                }
-                else
-                {
-                    // TODO
-                    foreach (dchar c; writeme)
-                    {
-                        wchar[2] wc = void;
-                        size_t wcLen = std.utf.encode(wc, c);
-                        indirectWriteConsoleW(hconsole,
-                                wc.ptr, wcLen, null, null);
-                    }
-                }
-                return; // done
-            }
+                return putConsoleW(osfhnd(file_.getFP()), writeme);
         }
 
         if (useWide_)
@@ -224,13 +177,7 @@ struct LockingNativeTextWriter
         version (Windows)
         {
             if (useWinConsole_)
-            {
-                wchar[2] wc = void;
-                size_t wcLen = std.utf.encode(wc, c);
-                indirectWriteConsoleW(osfhnd(file_.p.handle),
-                        wc.ptr, wcLen, null, null);
-                return;
-            }
+                return putConsoleW(osfhnd(file_.getFP()), c);
         }
 
         if (useWide_)
@@ -238,6 +185,64 @@ struct LockingNativeTextWriter
         else
             narrowWriter_.put(c);
     }
+
+
+    //----------------------------------------------------------------//
+    // WriteConsoleW
+    //----------------------------------------------------------------//
+private:
+    version (Windows)
+    {
+        enum size_t BUFFER_SIZE = 80;
+
+        // write a Unicode code point
+        void putConsoleW(HANDLE console, dchar c)
+        {
+            if (c <= 0xFFFF)
+            {
+                indirectWriteConsoleW(console,
+                        cast(wchar*) &c, 1, null, null);
+            }
+            else
+            {
+                wchar[2] wbuf = void;
+                encode(wbuf, c);
+                indirectWriteConsoleW(console,
+                        wbuf.ptr, 2, null, null);
+            }
+        }
+
+        // write a UTF-8 string
+        void putConsoleW(HANDLE console, in char[] str)
+        {
+            for (const(char)[] inbuf = str; inbuf.length > 0; )
+            {
+                wchar[BUFFER_SIZE] wbuf = void;
+                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                indirectWriteConsoleW(console,
+                        wbuf.ptr, wsLen, null, null);
+            }
+        }
+
+        // write a UTF-16 string
+        void putConsoleW(HANDLE console, in wchar[] str)
+        {
+            indirectWriteConsoleW(console,
+                    str.ptr, str.length, null, null);
+        }
+
+        // write a UTF-32 string
+        void putConsoleW(HANDLE console, in dchar[] str)
+        {
+            for (const(dchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                wchar[BUFFER_SIZE] wbuf = void;
+                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                indirectWriteConsoleW(console,
+                        wbuf.ptr, wsLen, null, null);
+            }
+        }
+    } // Windows
 
 
     //----------------------------------------------------------------//
@@ -254,6 +259,7 @@ private:
     version (Windows) bool useWinConsole_;
 }
 
+
 // internally used to write multibyte character to FILE*
 private struct UnsharedNarrowPutter
 {
@@ -261,10 +267,8 @@ private struct UnsharedNarrowPutter
 
     void put(in char[] mbs)
     {
-//      foreach (char unit; mbs)
-//          FPUTC(unit, handle_);
-//      errnoEnforce(ferror(cast(FILE*) handle_) == 0);
-        size_t nwritten = fwrite(mbs.ptr, 1, mbs.length, cast(shared) handle_);
+        size_t nwritten = fwrite(
+                mbs.ptr, 1, mbs.length, cast(shared) handle_);
         errnoEnforce(nwritten == mbs.length);
     }
 }
@@ -295,36 +299,35 @@ private struct UnsharedWidePutter
 
 version (Windows)
 {
-    version = UNICODE_WCHART;
+    version = WCHART_WCHAR;
 //  version = HAVE_MBSTATE;     // DMD/Windows has no mbstate
 }
 else version (linux)
 {
-    version = UNICODE_WCHART;
+    version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (OSX)
 {
-    version = UNICODE_WCHART;
+    version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
 }
 else version (FreeBSD)
 {
+    version = WCHART_DCHAR;//XXX
     version = HAVE_MBSTATE;
+    version = HAVE_RANGED_MBWC;
 //  version = HAVE_ICONV;       // Citrus
-
-    debug (WITH_LIBICONV)
-    {
-        version = HAVE_ICONV;
-        pragma(lib, "iconv");
-    }
 }
 /+
 else version (NetBSD)
 {
     version = HAVE_MBSTATE;
+//  version = HAVE_RANGED_MBWC; // not yet
     version = HAVE_ICONV;
 }
 else version (Solaris)
@@ -335,32 +338,33 @@ else version (Solaris)
 +/
 else static assert(0);
 
+version (WCHART_WCHAR) version = WCHART_UNICODE;
+version (WCHART_DCHAR) version = WCHART_UNICODE;
+
+debug (WITH_LIBICONV)
+{
+    version = HAVE_ICONV;
+    pragma(lib, "iconv");
+}
+
 
 //----------------------------------------------------------------------------//
 // iconv
 //----------------------------------------------------------------------------//
 
-version (UNICODE_WCHART)
+version (HAVE_ICONV) private
 {
-    version = USE_LIBC_WCHAR;
-}
-else version (HAVE_ICONV)
-{
-    version = USE_ICONV;
-
-    // druntime: core.sys.posix.iconv
-    private extern(C) @system
+    /+
+    import core.sys.posix.iconv;
+    +/
+    extern(C) @system
     {
-        alias void* iconv_t;
-        iconv_t iconv_open(in char* tocode, in char* fromcode);
-        size_t iconv(iconv_t cd, in ubyte** inbuf, size_t* inbytesleft, ubyte** outbuf, size_t* outbytesleft);
-        int iconv_close(iconv_t cd);
+        typedef void* iconv_t;
+        iconv_t iconv_open(in char*, in char*);
+        size_t iconv(iconv_t, in ubyte**, size_t*, ubyte**, size_t*);
+        int iconv_close(iconv_t);
     }
-}
-else static assert(0);
 
-private
-{
     version (LittleEndian)
     {
         enum ICONV_WSTRING = "UTF-16LE",
@@ -379,6 +383,10 @@ private
 // druntime: core.stdc.wchar is not correct
 //----------------------------------------------------------------------------//
 
+/+
+import core.stdc.stdlib;
+import core.stdc.wchar;
++/
 private
 {
     version (Windows)
@@ -406,7 +414,8 @@ private
     }
     else version (FreeBSD)
     {
-        alias int wchar_t;
+        //alias int wchar_t;
+        alias dchar wchar_t;//XXX
         union mbstate_t
         {
             ubyte[128] __mbstate8;
@@ -445,8 +454,9 @@ private
         size_t wcrtomb(char* s, wchar_t wc, mbstate_t* ps);
         size_t mbsrtowcs(wchar_t* dst, in char** src, size_t len, mbstate_t* ps);
         size_t wcsrtombs(char* dst, in wchar_t** src, size_t len, mbstate_t* ps);
-//      size_t mbsnrtowcs(wchar_t* dst, in char** src, size_t nms, size_t len, mbstate_t* ps);
-//      size_t wcsnrtombs(char* dst, in wchar_t** src, size_t nwc, size_t len, mbstate_t* ps);
+
+        size_t mbsnrtowcs(wchar_t* dst, in char** src, size_t nms, size_t len, mbstate_t* ps);
+        size_t wcsnrtombs(char* dst, in wchar_t** src, size_t nwc, size_t len, mbstate_t* ps);
 
         int    mblen(in char* s, size_t n);
         int    mbtowc(wchar_t* pwc, in char* s, size_t n);
@@ -473,6 +483,9 @@ private
 // druntime: core.sys.posix.langinfo
 //----------------------------------------------------------------------------//
 
+/+
+import core.sys.posix.langinfo;
++/
 version (Posix) private
 {
     version (linux)
@@ -488,6 +501,7 @@ version (Posix) private
         alias int nl_item;
         enum CODESET = 0;
     }
+    /+
     else version (NetBSD)
     {
         alias int nl_item;
@@ -498,6 +512,7 @@ version (Posix) private
         alias int nl_item;
         enum CODESET = 49;
     }
+    +/
     else static assert(0);
 
     extern(C) @system
@@ -523,32 +538,36 @@ import core.stdc.string : memset, strcmp;
 version (unittest) import std.array : appender;
 
 
-/*
- * Encodes a Unicode code point in UTF-16 and writes it to buf with zero
- * terminator (U+0).  Returns the number of code units written to buf
- * including the terminating zero.
- */
-private size_t encodez(ref wchar[3] buf, dchar ch)
+private enum BUFFER_SIZE : size_t
 {
-    size_t n = std.utf.encode(*cast(wchar[2]*) &buf, ch);
-    assert(n <= 2);
-    buf[n++] = 0;
-    return n;
+    mchars = 160,
+    wchars =  80,
+    dchars =  80,
 }
-
-unittest
-{
-    wchar[3] bufz;
-    assert(encodez(bufz, '\u1000') == 2);
-    assert(bufz[0 .. 2] == "\u1000\u0000");
-    assert(encodez(bufz, '\U00020000') == 3);
-    assert(bufz[0 .. 3] == "\U00020000\u0000");
-}
+static assert(BUFFER_SIZE.mchars >= MB_LEN_MAX);
 
 
 //----------------------------------------------------------------------------//
 // Unicode --> multibyte
 //----------------------------------------------------------------------------//
+
+     version (WCHART_UNICODE) version = NarrowWriter_convertWithC;
+else version (HAVE_ICONV)     version = NarrowWriter_convertWithIconv;
+else static assert(0);
+
+version (NarrowWriter_convertWithC)
+{
+    version (HAVE_RANGED_MBWC) version (WCHART_WCHAR)
+        version = NarrowWriter_wcsnrtombsForWstring;
+
+    version (HAVE_RANGED_MBWC) version (WCHART_DCHAR)
+        version = NarrowWriter_wcsnrtombsForDstring;
+}
+
+version (NarrowWriter_wcsnrtombsForWstring) version = NarrowWriter_preferWstring;
+version (NarrowWriter_wcsnrtombsForDstring) version = NarrowWriter_preferDstring;
+version (NarrowWriter_convertWithIconv)     version = NarrowWriter_preferDstring;
+
 
 /**
  * An output range which converts UTF string or Unicode code point to the
@@ -565,6 +584,7 @@ struct NarrowWriter(Sink)
      *   sink =
      *      An output range of type $(D Sink) where to put converted
      *      multibyte character sequence.
+     *
      *   replacement =
      *      A valid multibyte string to use when a Unicode character cannot
      *      be represented in the current locale.  $(D NarrowWriter) will
@@ -614,14 +634,14 @@ struct NarrowWriter(Sink)
         replacement_ = replacement;
 
         // Initialize the convertion state.
-        version (USE_LIBC_WCHAR)
+        version (NarrowWriter_convertWithC)
         {
             version (HAVE_MBSTATE)
                 context_.narrowen = mbstate_t.init;
             else
                 wctomb(null, 0);
         }
-        else version (USE_ICONV)
+        else version (NarrowWriter_convertWithIconv)
         {
             const(char)* codeset = nl_langinfo(CODESET);
             if (codeset == null || strcmp(codeset, "646") == 0)
@@ -646,7 +666,7 @@ struct NarrowWriter(Sink)
     {
         if (context_ && --context_.refCount == 0)
         {
-            version (USE_ICONV)
+            version (NarrowWriter_convertWithIconv)
                 errnoEnforce(iconv_close(context_.mbencode) != -1);
         }
     }
@@ -663,70 +683,138 @@ struct NarrowWriter(Sink)
      */
     void put(in char[] str)
     {
-        // TODO
-        /+
-        foreach (dchar ch; str)
-            put(ch);
-        +/
-
-        const(char)[] inbuf = str;
-
-        while (inbuf.length > 0)
+        version (NarrowWriter_preferWstring)
         {
-            dchar[80] dchbuf = void;
-            size_t dchLen;
-
-            dchLen = inbuf.transcode(dchbuf);
-            put(dchbuf[0 .. dchLen]);
+            for (const(char)[] inbuf = str; inbuf.length > 0; )
+            {
+                wchar[BUFFER_SIZE.wchars] wbuf = void;
+                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                put(wbuf[0 .. wsLen]);
+            }
+        }
+        else version (NarrowWriter_preferDstring)
+        {
+            for (const(char)[] inbuf = str; inbuf.length > 0; )
+            {
+                dchar[BUFFER_SIZE.dchars] dbuf = void;
+                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                put(dbuf[0 .. dsLen]);
+            }
+        }
+        else
+        {
+            // [fallback] put each character in turn
+            foreach (dchar ch; str)
+                put(ch);
         }
     }
 
     /// ditto
     void put(in wchar[] str)
     {
-        // TODO
-        foreach (dchar ch; str)
-            put(ch);
+        version (NarrowWriter_preferDstring)
+        {
+            for (const(wchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                dchar[BUFFER_SIZE.dchars] dbuf = void;
+                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                put(dbuf[0 .. dsLen]);
+            }
+        }
+        else version (NarrowWriter_wcsnrtombsForWstring)
+        {
+            // Convert UTF-16 to multibyte by chunk using wcsnrtombs().
+            for (const(wchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                char[BUFFER_SIZE.mchars] mbuf = void;
+                const(wchar)* psrc = inbuf.ptr;
+
+                const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
+                        inbuf.length, mbuf.length, &context_.narrowen);
+                errnoEnforce(mbLen == -1); // TODO replacement
+
+                sink_.put(mbuf[0 .. mbLen]);
+                inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
+            }
+        }
+        else
+        {
+            // [fallback] put each character in turn
+            foreach (dchar ch; str)
+                put(ch);
+        }
     }
 
     /// ditto
     void put(in dchar[] str)
     {
-        // TODO
-
-        version (USE_ICONV)
+        version (NarrowWriter_preferWstring)
         {
-            char[128] mbuf = void;
-            auto psrc = cast(const(ubyte)*) str.ptr;
-            auto nsrc = dchar.sizeof * str.length;
-
-            while (nsrc > 0)
+            for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
-                auto pdst = cast(ubyte*) mbuf.ptr;
-                auto ndst = mbuf.length;
+                wchar[BUFFER_SIZE.wchars] wbuf = void;
+                const wsLen = inbuf.toUTF32Buffer(wbuf);
+                put(wbuf[0 .. wsLen]);
+            }
+        }
+        else version (NarrowWriter_wcsnrtombsForDstring)
+        {
+            // Convert UTF-32 to multibyte by chunk using wcsnrtombs().
+            for (const(dchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                char[BUFFER_SIZE.mchars] mbuf = void;
+                const(dchar)* psrc = inbuf.ptr;
+
+                const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
+                        inbuf.length, mbuf.length, &context_.narrowen);
+                errnoEnforce(mbLen != -1); // TODO replacement
+
+                sink_.put(mbuf[0 .. mbLen]);
+                inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
+            }
+        }
+        else version (NarrowWriter_convertWithIconv)
+        {
+            // Convert UTF-32 to multibyte by chunk.
+            auto psrc = cast(const(ubyte)*) str.ptr;
+            auto srcLeft = dchar.sizeof * str.length;
+
+            while (srcLeft > 0)
+            {
+                char[BUFFER_SIZE.mchars] mbuf = void;
+                auto pbuf = cast(ubyte*) mbuf.ptr;
+                auto bufLeft = mbuf.length;
 
                 auto stat = iconv(context_.mbencode,
-                        &psrc, &nsrc, &pdst, &ndst);
+                        &psrc, &srcLeft, &pbuf, &bufLeft);
                 auto iconverr = errno;
 
-                if (ndst < mbuf.length)
-                    sink_.put(mbuf[0 .. $ - ndst]);
+                // Output converted characters (available even on error).
+                if (bufLeft < mbuf.length)
+                    sink_.put(mbuf[0 .. $ -bufLeft]);
 
-                if (stat == -1 && errno == EILSEQ && replacement_)
+                if (stat == -1)
                 {
-                    sink_.put(replacement_);
-                    psrc += dchar.sizeof;
-                    nsrc -= dchar.sizeof;
-                    continue;
+                    // EILSEQ means that iconv couldn't convert the
+                    // character at *psrc.  We can recover this error if
+                    // we have a replacement string.
+                    errno = iconverr;
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+                    assert(srcLeft >= dchar.sizeof);
+
+                    // Output the replacement string and skip *psrc.
+                    if (replacement_.length > 0)
+                        sink_.put(replacement_);
+                    psrc    += dchar.sizeof;
+                    srcLeft -= dchar.sizeof;
                 }
-                errno = iconverr;
-                errnoEnforce(stat != -1,
-                    "Cannot convert a Unicode character to multibyte "
-                    ~"character sequence");
             }
         }
         else
         {
+            // [fallback] put each character in turn
             foreach (dchar ch; str)
                 put(ch);
         }
@@ -739,7 +827,7 @@ struct NarrowWriter(Sink)
      */
     void put(dchar ch)
     {
-        version (USE_LIBC_WCHAR)
+        version (NarrowWriter_convertWithC)
         {
             static if (is(wchar_t == wchar))
             {
@@ -761,8 +849,11 @@ struct NarrowWriter(Sink)
 
                 if (mbLen == -1)
                 {
+                    // Unicode ch is not representable in the current
+                    // locale.  Output the replacement instead.
                     if (replacement_.length > 0)
                         sink_.put(replacement_);
+
                     // Here, the shift state is undefined; reset it to
                     // the initial state.
                     version (HAVE_MBSTATE)
@@ -772,7 +863,7 @@ struct NarrowWriter(Sink)
                 }
                 else
                 {
-                    assert(0 < mbLen && mbLen <= mbuf.length);
+                    // succeeded
                     sink_.put(mbuf[0 .. mbLen]);
                 }
             }
@@ -791,8 +882,11 @@ struct NarrowWriter(Sink)
 
                 if (mbLen == -1)
                 {
+                    // Unicode ch is not representable in the current
+                    // locale.  Output the replacement instead.
                     if (replacement_.length > 0)
                         sink_.put(replacement_);
+
                     // Here, the shift state is undefined; reset it to
                     // the initial state.
                     version (HAVE_MBSTATE)
@@ -802,13 +896,13 @@ struct NarrowWriter(Sink)
                 }
                 else
                 {
-                    assert(0 < mbLen && mbLen <= mbuf.length);
+                    // succeeded
                     sink_.put(mbuf[0 .. mbLen]);
                 }
             }
             else static assert(0);
         }
-        else version (USE_ICONV)
+        else version (NarrowWriter_convertWithIconv)
         {
             char[MB_LEN_MAX] mbuf = void;
 
@@ -825,12 +919,14 @@ struct NarrowWriter(Sink)
 
             if (stat == -1)
             {
+                // Unicode ch is not representable in the current locale.
+                // Output the replacement instead.
                 if (replacement_.length > 0)
                     sink_.put(replacement_);
             }
             else
             {
-                assert(bufLeft < mbuf.length);
+                // succeeded
                 sink_.put(mbuf[0 .. $ - bufLeft]);
             }
         }
@@ -846,12 +942,12 @@ private:
 
     struct Context
     {
-        version (USE_LIBC_WCHAR)
+        version (NarrowWriter_convertWithC)
         {
             version (HAVE_MBSTATE)
                 mbstate_t narrowen; // wide(Unicode) -> multibyte
         }
-        else version (USE_ICONV)
+        else version (NarrowWriter_convertWithIconv)
         {
             iconv_t mbencode;       // Unicode -> multibyte
         }
@@ -902,6 +998,24 @@ unittest
 // Unicode --> wchar_t
 //----------------------------------------------------------------------------//
 
+version (WCHART_UNICODE)
+{
+    version = WideWriter_passThru;
+         version (WCHART_WCHAR) version = WideWriter_passThruWstring;
+    else version (WCHART_DCHAR) version = WideWriter_passThruDstring;
+    else static assert(0);
+}
+else
+{
+    // First convert a Unicode character into multibyte character sequence.
+    // Then widen it to obtain a wide character.  Uses NarrowWriter.
+    version = WideWriter_narrowenWiden;
+}
+
+version (WideWriter_passThruWstring) version = WideWriter_preferWstring;
+version (WideWriter_passThruDstring) version = WideWriter_preferDstring;
+
+
 /**
  * An output range which converts UTF string or Unicode code point to the
  * corresponding wide character sequence in the current locale code set
@@ -916,6 +1030,7 @@ struct WideWriter(Sink)
      *   sink =
      *      An output range of type $(D Sink) where to put converted
      *      wide character sequence.
+     *
      *   replacement =
      *      A valid multibyte string to use when a Unicode character cannot
      *      be represented in the current locale.  $(D WideWriter) will
@@ -931,17 +1046,18 @@ struct WideWriter(Sink)
      *
      * Note:
      * $(D replacement) is a multibyte string because it's hard to write
-     * wide character sequence on some CSI (codeset independent) platforms.
+     * wide character sequence by hand on some $(I codeset independent)
+     * platforms such as NetBSD.
      */
     this(Sink sink, immutable(char)[] replacement = null)
     {
-        version (USE_LIBC_WCHAR)
+        version (WideWriter_passThru)
         {
-            swap(sink_, sink);
             // Unicode-to-Unicode; replacement is unnecessary.
             cast(void) replacement;
+            swap(sink_, sink);
         }
-        else
+        else version (WideWriter_narrowenWiden)
         {
             // Convertion will be done as follows under code set
             // independent systems:
@@ -950,6 +1066,7 @@ struct WideWriter(Sink)
             alias .Widener!(Sink) Widener;
             proxy_ = NarrowWriter!(Widener)(Widener(sink), replacement);
         }
+        else static assert(0);
     }
 
 
@@ -963,28 +1080,48 @@ struct WideWriter(Sink)
      */
     void put(in char[] str)
     {
-        // TODO
-        foreach (dchar ch; str)
-            put(ch);
+        version (WideWriter_preferWstring)
+        {
+            for (const(char)[] inbuf = str; inbuf.length > 0; )
+            {
+                wchar[BUFFER_SIZE.wchars] wbuf = void;
+                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                put(wbuf[0 .. wsLen]);
+            }
+        }
+        else version (WideWriter_preferDstring)
+        {
+            for (const(char)[] inbuf = str; inbuf.length > 0; )
+            {
+                dchar[BUFFER_SIZE.dchars] dbuf = void;
+                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                put(dbuf[0 .. dsLen]);
+            }
+        }
+        else version (WideWriter_narrowenWiden)
+        {
+            proxy_.put(str);
+        }
+        else static assert(0);
     }
 
     /// ditto
     void put(in wchar[] str)
     {
-        version (USE_LIBC_WCHAR)
+        version (WideWriter_preferDstring)
         {
-            static if (is(wchar_t == wchar))
+            for (const(wchar)[] inbuf = str; inbuf.length > 0; )
             {
-                sink_.put(str);
-            }
-            else
-            {
-                // TODO
-                foreach (dchar ch; str)
-                    put(ch);
+                dchar[BUFFER_SIZE.dchars] dbuf = void;
+                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                put(dbuf[0 .. dsLen]);
             }
         }
-        else version (USE_ICONV)
+        else version (WideWriter_passThruWstring)
+        {
+            sink_.put(str);
+        }
+        else version (WideWriter_narrowenWiden)
         {
             proxy_.put(str);
         }
@@ -994,20 +1131,20 @@ struct WideWriter(Sink)
     /// ditto
     void put(in dchar[] str)
     {
-        version (USE_LIBC_WCHAR)
+        version (WideWriter_preferWstring)
         {
-            static if (is(wchar_t == dchar))
+            for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
-                sink_.put(str);
-            }
-            else
-            {
-                // TODO
-                foreach (dchar ch; str)
-                    put(ch);
+                wchar[BUFFER_SIZE.wchars] wbuf = void;
+                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                put(wbuf[0 .. wsLen]);
             }
         }
-        else version (USE_ICONV)
+        else version (WideWriter_passThruDstring)
+        {
+            sink_.put(str);
+        }
+        else version (WideWriter_narrowenWiden)
         {
             proxy_.put(str);
         }
@@ -1021,12 +1158,16 @@ struct WideWriter(Sink)
      */
     void put(dchar ch)
     {
-        version (USE_LIBC_WCHAR)
+        version (WideWriter_passThru)
         {
             static if (is(wchar_t == wchar))
             {
                 wchar[2] wbuf = void;
-                sink_.put(wbuf[0 .. encode(wbuf, ch)]);
+
+                if (encode(wbuf, ch) == 1)
+                    sink_.put(wbuf[0]);
+                else
+                    sink_.put(wbuf[]);
             }
             else static if (is(wchar_t == dchar))
             {
@@ -1034,7 +1175,7 @@ struct WideWriter(Sink)
             }
             else static assert(0);
         }
-        else version (USE_ICONV)
+        else version (WideWriter_narrowenWiden)
         {
             proxy_.put(ch);
         }
@@ -1044,11 +1185,11 @@ struct WideWriter(Sink)
 
     //----------------------------------------------------------------//
 private:
-    version (USE_LIBC_WCHAR)
+    version (WideWriter_passThru)
     {
         Sink sink_;
     }
-    else version (USE_ICONV)
+    else version (WideWriter_narrowenWiden)
     {
         NarrowWriter!(Widener!(Sink)) proxy_;
     }
@@ -1116,6 +1257,8 @@ private struct Widener(Sink)
     {
         const(char)[] rest = mbs;
 
+        // TODO: mbsnrtowcs
+
         while (rest.length > 0)
         {
             wchar_t wc;
@@ -1152,14 +1295,62 @@ private:
 }
 
 
-//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
+////////////////////////////////////////////////////////////////////////////////
+// std.utf extension
+////////////////////////////////////////////////////////////////////////////////
 
-size_t transcode(ref const(char)[] inbuf, dchar[] outbuf)
+/**
+ * Encodes a Unicode code point in UTF-16 and writes it to buf with zero
+ * terminator (U+0).  Returns the number of code units written to buf
+ * including the terminating zero.
+ */
+size_t encodez(ref wchar[3] buf, dchar ch)
+{
+    size_t n = std.utf.encode(*cast(wchar[2]*) &buf, ch);
+    assert(n <= 2);
+    buf[n++] = 0;
+    return n;
+}
+
+unittest
+{
+    wchar[3] bufz;
+    assert(encodez(bufz, '\u1000') == 2);
+    assert(bufz[0 .. 2] == "\u1000\u0000");
+    assert(encodez(bufz, '\U00020000') == 3);
+    assert(bufz[0 .. 3] == "\U00020000\u0000");
+}
+
+
+/**
+ * Converts 
+ *
+ * Returns:
+ *   The number of code units written to $(D outbuf).
+ *
+ * Example:
+--------------------
+// Write unicode sequence without heap allocation.
+
+void output(in char[] str)
+{
+    dchar[80] buf;
+
+    for (const(char)[] src = str; src.length != 0; )
+    {
+        auto len = str.toUTF32Buffer(buf);
+        write_unicode(buf[0 .. len]);
+    }
+}
+--------------------
+ */
+size_t toUTF32Buffer(Char)(ref const(Char)[] inbuf, dchar[] outbuf) @safe
+    if (is(Char == char) || is(Char == wchar))
 {
     auto curin = inbuf;
     auto curout = outbuf;
 
-    while (curin.length > 0 && curout.length > 0)
+    while (curin.length != 0 && curout.length != 0)
     {
         curout[0] = curin.decode();
         curout = curout[1 .. $];
@@ -1168,8 +1359,124 @@ size_t transcode(ref const(char)[] inbuf, dchar[] outbuf)
     return outbuf.length - curout.length;
 }
 
+unittest
+{
+    const(char)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    dchar[6] dstbuf;
 
-private dchar decode(ref const(char)[] inbuf)
+    assert(src.toUTF32Buffer(dstbuf) == 6);
+    assert(src.length == 14);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
+
+    assert(src.toUTF32Buffer(dstbuf) == 4);
+    assert(src.length == 0);
+    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
+}
+
+unittest
+{
+    const(wchar)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    dchar[6] dstbuf;
+
+    assert(src.toUTF32Buffer(dstbuf) == 6);
+    assert(src.length == 6);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
+
+    assert(src.toUTF32Buffer(dstbuf) == 4);
+    assert(src.length == 0);
+    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
+}
+
+
+/**
+ * Ditto
+ */
+size_t toUTF16Buffer(Char)(ref const(Char)[] inbuf, wchar[] outbuf) @safe
+    if (is(Char == char) || is(Char == dchar))
+{
+    auto curin = inbuf;
+    auto curout = outbuf;
+
+    while (curin.length != 0)
+    {
+        auto nextin = curin;
+        auto c = nextin.decode();
+
+        if (c <= 0xFFFF)
+        {
+            if (curout.length < 1)
+                break;
+            curout[0] = cast(wchar) c;
+            curout = curout[1 .. $];
+        }
+        else
+        {
+            if (curout.length < 2)
+                break;
+            curout[0] = cast(wchar) ((((c - 0x10000) >> 10) & 0x3FF) + 0xD800);
+            curout[1] = cast(wchar) (( (c - 0x10000)        & 0x3FF) + 0xDC00);
+            curout = curout[2 .. $];
+        }
+        curin = nextin;
+    }
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+unittest
+{
+    const(char)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    wchar[6] dstbuf;
+
+    assert(src.toUTF16Buffer(dstbuf) == 6);
+    assert(src.length == 14);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
+
+    assert(src.toUTF16Buffer(dstbuf) == 6);
+    assert(src.length == 0);
+    assert(dstbuf[0 .. 6] == "\uE000\uFFFD\U00010000\U0010FFFF");
+}
+
+unittest
+{
+    const(dchar)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    wchar[3] dstbuf;
+
+    assert(src.toUTF16Buffer(dstbuf) == 3);
+    assert(src.length == 7);
+    assert(dstbuf[0 .. 3] == "\u0000\u007F\u0080");
+
+    assert(src.toUTF16Buffer(dstbuf) == 3);
+    assert(src.length == 4);
+    assert(dstbuf[0 .. 3] == "\u07FF\u0800\uD7FF");
+
+    assert(src.toUTF16Buffer(dstbuf) == 2);
+    assert(src.length == 2);
+    assert(dstbuf[0 .. 2] == "\uE000\uFFFD");
+
+    assert(src.toUTF16Buffer(dstbuf) == 2);
+    assert(src.length == 1);
+    assert(dstbuf[0 .. 2] == "\U00010000");
+
+    assert(src.toUTF16Buffer(dstbuf) == 2);
+    assert(src.length == 0);
+    assert(dstbuf[0 .. 2] == "\U0010FFFF");
+}
+
+
+/**
+ * TODO document
+ */
+dchar decode(ref const(char)[] inbuf) @safe
+in
+{
+    assert(inbuf.length > 0);
+}
+body
 {
     size_t inLen;
     dchar c;
@@ -1229,6 +1536,74 @@ private dchar decode(ref const(char)[] inbuf)
 
     inbuf = inbuf[inLen .. $];
     return c;
+}
+
+unittest
+{
+}
+
+
+/**
+ * Ditto
+ */
+dchar decode(ref const(wchar)[] inbuf) @safe
+in
+{
+    assert(inbuf.length > 0);
+}
+body
+{
+    size_t inLen;
+    dchar c;
+    const w = inbuf[0];
+
+    if (w < 0x7F)
+    {
+        c = w;
+        inLen = 1;
+    }
+    else if (w < 0xD800 || 0xDBFF < w)
+    {
+        if (0xDC00 <= w && w <= 0xDFFF)
+            throw new Exception(
+                "encountered an isolated low surrogate code unit "
+                ~"in a UTF-16 string", __FILE__, __LINE__);
+        c = w;
+        inLen = 1;
+    }
+    else if (0xD800 <= w && w <= 0xDBFF)
+    {
+        wchar ww = inbuf[1];
+
+        if (ww < 0xDC00 || 0xDFFF < ww)
+            throw new Exception(
+                "encountered an isolated high surrogate code unit "
+                ~"in a UTF-16 string", __FILE__, __LINE__);
+        c = ((w - 0xD7C0) << 10) + (ww - 0xDC00);
+        inLen = 2;
+    }
+
+    inbuf = inbuf[inLen .. $];
+    return c;
+}
+
+unittest
+{
+}
+
+
+/**
+ * Ditto
+ */
+dchar decode(ref const(dchar)[] inbuf) @safe
+{
+    auto c = inbuf[0];
+    inbuf = inbuf[1 .. $];
+    return c;
+}
+
+unittest
+{
 }
 
 
