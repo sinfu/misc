@@ -11,25 +11,57 @@ void main()
 //  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
     setlocale(LC_CTYPE, "");
+    setlocale(LC_CTYPE, "ja_JP.UTF-8");
 
-//  auto sink = File("a.txt", "w");
+    auto sink = File("a.txt", "w");
 //  auto sink = stderr;
-    auto sink = stdout;
+//  auto sink = stdout;
 
-//  fwide(sink.getFP(), -1);
+    fwide(sink.getFP(), -1);
 //  fwide(sink.getFP(),  1);
 
     {
-        auto w = LockingNativeTextWriter(sink, "<?>");
+        //auto w = LockingNativeTextWriter(sink, "<?>");
+        auto w = File.LockingTextWriter(sink);
         formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
-        //foreach (i; 0 .. 1_000_000)
-        foreach (i; 0 .. 10)
-            w.put("abc123\n");
+        foreach (i; 0 .. 1_000_000)
+        //foreach (i; 0 .. 10)
+            w.put("安倍川もち 生八つ橋 なごやん 雪の宿\n");
     }
     sink.writeln("...");
 }
 
+//------------------------------------------------------------
+// バッファリングを加えたときのテスト結果
+//------------------------------------------------------------
+
+// テスト用ライン "安倍川もち 生八つ橋 なごやん 雪の宿\n"
+
+// To xterm/tmux, UTF-8 52u/L, 100 000
+//
+// LockingNativeTextWriter
+// (narrow)  1.21s user 0.28s system 29% cpu 5.063 total
+// ( wide )  1.80s user 0.34s system 39% cpu 5.415 total
+//
+// LockingTextWriter
+// (narrow)  0.87s user 0.35s system 24% cpu 4.947 total
+// ( wide )  1.22s user 0.36s system 30% cpu 5.207 total
+
+// To file, UTF-8 52 u/L, 1 000 000
+//
+// LockingNativeTextWriter
+// (narrow)  2.30s user 0.21s system 97% cpu 2.582 total
+// ( wide )  5.63s user 0.19s system 99% cpu 5.838 total
+//
+// LockingTextWriter
+// (narrow)  0.96s user 0.20s system 65% cpu 1.764 total
+// ( wide )  2.65s user 0.19s system 99% cpu 2.858 total
+
+// UTF-8 ロケールでは LNTW/narrow == LTW/wide であることを考えると，
+// かなり優秀じゃないか? (LNTW/wide は多重変換だから仕方ない)
+
+//------------------------------------------------------------
 
 // use libiconv for debugging
 version (FreeBSD) debug = WITH_LIBICONV;
@@ -167,6 +199,7 @@ struct LockingNativeTextWriter
                 }
                 else
                 {
+                    // TODO
                     foreach (dchar c; writeme)
                     {
                         wchar[2] wc = void;
@@ -180,11 +213,9 @@ struct LockingNativeTextWriter
         }
 
         if (useWide_)
-            foreach (dchar c; writeme)
-                wideWriter_.put(c);
+            wideWriter_.put(writeme);
         else
-            foreach (dchar c; writeme)
-                narrowWriter_.put(c);
+            narrowWriter_.put(writeme);
     }
 
     /// ditto
@@ -230,9 +261,11 @@ private struct UnsharedNarrowPutter
 
     void put(in char[] mbs)
     {
-        foreach (char unit; mbs)
-            FPUTC(unit, handle_);
-        errnoEnforce(ferror(cast(FILE*) handle_) == 0);
+//      foreach (char unit; mbs)
+//          FPUTC(unit, handle_);
+//      errnoEnforce(ferror(cast(FILE*) handle_) == 0);
+        size_t nwritten = fwrite(mbs.ptr, 1, mbs.length, cast(shared) handle_);
+        errnoEnforce(nwritten == mbs.length);
     }
 }
 
@@ -630,13 +663,28 @@ struct NarrowWriter(Sink)
      */
     void put(in char[] str)
     {
+        // TODO
+        /+
         foreach (dchar ch; str)
             put(ch);
+        +/
+
+        const(char)[] inbuf = str;
+
+        while (inbuf.length > 0)
+        {
+            dchar[80] dchbuf = void;
+            size_t dchLen;
+
+            dchLen = inbuf.transcode(dchbuf);
+            put(dchbuf[0 .. dchLen]);
+        }
     }
 
     /// ditto
     void put(in wchar[] str)
     {
+        // TODO
         foreach (dchar ch; str)
             put(ch);
     }
@@ -644,8 +692,44 @@ struct NarrowWriter(Sink)
     /// ditto
     void put(in dchar[] str)
     {
-        foreach (dchar ch; str)
-            put(ch);
+        // TODO
+
+        version (USE_ICONV)
+        {
+            char[128] mbuf = void;
+            auto psrc = cast(const(ubyte)*) str.ptr;
+            auto nsrc = dchar.sizeof * str.length;
+
+            while (nsrc > 0)
+            {
+                auto pdst = cast(ubyte*) mbuf.ptr;
+                auto ndst = mbuf.length;
+
+                auto stat = iconv(context_.mbencode,
+                        &psrc, &nsrc, &pdst, &ndst);
+                auto iconverr = errno;
+
+                if (ndst < mbuf.length)
+                    sink_.put(mbuf[0 .. $ - ndst]);
+
+                if (stat == -1 && errno == EILSEQ && replacement_)
+                {
+                    sink_.put(replacement_);
+                    psrc += dchar.sizeof;
+                    nsrc -= dchar.sizeof;
+                    continue;
+                }
+                errno = iconverr;
+                errnoEnforce(stat != -1,
+                    "Cannot convert a Unicode character to multibyte "
+                    ~"character sequence");
+            }
+        }
+        else
+        {
+            foreach (dchar ch; str)
+                put(ch);
+        }
     }
 
 
@@ -879,6 +963,7 @@ struct WideWriter(Sink)
      */
     void put(in char[] str)
     {
+        // TODO
         foreach (dchar ch; str)
             put(ch);
     }
@@ -894,6 +979,7 @@ struct WideWriter(Sink)
             }
             else
             {
+                // TODO
                 foreach (dchar ch; str)
                     put(ch);
             }
@@ -916,6 +1002,7 @@ struct WideWriter(Sink)
             }
             else
             {
+                // TODO
                 foreach (dchar ch; str)
                     put(ch);
             }
@@ -1063,4 +1150,85 @@ private:
     version (HAVE_MBSTATE)
         mbstate_t widen_;
 }
+
+
+//:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
+
+size_t transcode(ref const(char)[] inbuf, dchar[] outbuf)
+{
+    auto curin = inbuf;
+    auto curout = outbuf;
+
+    while (curin.length > 0 && curout.length > 0)
+    {
+        curout[0] = curin.decode();
+        curout = curout[1 .. $];
+    }
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+
+private dchar decode(ref const(char)[] inbuf)
+{
+    size_t inLen;
+    dchar c;
+    const u1 = inbuf[0];
+
+    if ((u1 & 0x80) == 0)
+    {
+        inLen = 1;
+        c = u1;
+    }
+    else if ((u1 & 0xE0) == 0xC0)
+    {
+        const u2 = inbuf[1];
+        if ((u1 & 0xEF) == 0xC0)
+            throw new Exception("overlong", __FILE__, __LINE__);
+        if ((u2 & 0xC0) != 0x80)
+            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
+
+        inLen = 2;
+        c = u1 & 0x1F;
+        c = (c << 6) | (u2 & 0x3F);
+    }
+    else if ((u1 & 0xF0) == 0xE0)
+    {
+        const u2 = inbuf[1];
+        const u3 = inbuf[2];
+        if (u1 == 0xE0 && (u2 & 0x1F))
+            throw new Exception("overlong", __FILE__, __LINE__);
+        if ((u2 & u3 & 0xC0) != 0x80)
+            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
+
+        inLen = 3;
+        c = u1 & 0x0F;
+        c = (c << 6) | (u2 & 0x3F);
+        c = (c << 6) | (u3 & 0x3F);
+    }
+    else if ((u1 & 0xF8) == 0xF0)
+    {
+        const u2 = inbuf[1];
+        const u3 = inbuf[2];
+        const u4 = inbuf[3];
+        if (u1 == 0xF0 && (u2 & 0x0F))
+            throw new Exception("overlong", __FILE__, __LINE__);
+        if ((u2 & u3 & u4 & 0xC0) != 0x80)
+            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
+
+        inLen = 4;
+        c = u1 & 0x07;
+        c = (c << 6) | (u2 & 0x3F);
+        c = (c << 6) | (u3 & 0x3F);
+        c = (c << 6) | (u4 & 0x3F);
+    }
+    else
+    {
+        throw new Exception("illegal UTF-8 sequence", __FILE__, __LINE__);
+    }
+
+    inbuf = inbuf[inLen .. $];
+    return c;
+}
+
 
