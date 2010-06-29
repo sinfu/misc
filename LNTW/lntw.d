@@ -9,6 +9,7 @@ void main()
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
 //  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "ja_JP.eucJP");
+//  setlocale(LC_CTYPE, "el_GR.ISO8859-7");
     setlocale(LC_CTYPE, "");
 
 //  auto sink = File("a.txt", "w");
@@ -20,6 +21,7 @@ void main()
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
         //auto w = File.LockingTextWriter(sink);
+
         formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
         foreach (i; 0 .. 10)
@@ -45,6 +47,8 @@ version (FreeBSD) debug = WITH_LIBICONV;
 // LockingNativeTextWriter
 ////////////////////////////////////////////////////////////////////////////////
 
+// TODO: POSIX multilocale
+
 import core.stdc.wchar_ : fwide;
 
 import std.algorithm;
@@ -56,6 +60,7 @@ import std.traits;
 version (Windows) private
 {
     import core.sys.windows.windows;
+    import std.windows.syserror : toWindowsErrorString = sysErrorString;
 
     version (DigitalMars)
     {
@@ -106,20 +111,28 @@ struct LockingNativeTextWriter
     {
         enforce(file.isOpen, "Attempted to write to a closed file");
         swap(file_, file);
-        useWide_ = (fwide(file_.p.handle, 0) > 0);
 
-        FLOCK(file_.p.handle);
-        auto handle = cast(_iobuf*) file_.p.handle;
+        auto fp = file_.getFP();
+        FLOCK(fp);
+        auto handle = cast(_iobuf*) fp;
+
+        useWide_ = (fwide(fp, 0) > 0);
 
         version (Windows)
         {
-            // can we use WriteConsoleW()?
-            useWinConsole_ = (indirectWriteConsoleW !is null &&
-                    isatty(fileno(file_.p.handle)));
-            if (useWinConsole_)
+            // Can we use WriteConsoleW()?
+            if (indirectWriteConsoleW !is null)
             {
-                fflush(file_.p.handle); // need to sync
-                return; // we won't use narrow/wideWriter
+                DWORD dummy;
+                auto console = osfhnd(fp);
+                if ( GetConsoleMode(console, &dummy) != 0 &&
+                        indirectWriteConsoleW(console, "\0"w.ptr, 0,
+                            null, null) != 0 )
+                {
+                    useWinConsole_ = true;
+                    fflush(fp); // need to sync
+                    return; // We won't use narrow nor wide writer.
+                }
             }
         }
 
@@ -195,20 +208,29 @@ private:
     {
         enum size_t BUFFER_SIZE = 80;
 
+        void putConsoleW(HANDLE console, in wchar[] str)
+        {
+            for (const(wchar)[] outbuf = str; outbuf.length > 0; )
+            {
+                DWORD nwritten;
+
+                if (!indirectWriteConsoleW(console,
+                        str.ptr, str.length, &nwritten, null))
+                {
+                    // XXX replacement?
+                    throw new Exception(
+                        toWindowsErrorString(GetLastError()),
+                        __FILE__, __LINE__);
+                }
+                outbuf = outbuf[nwritten .. $];
+            }
+        }
+
         void putConsoleW(HANDLE console, dchar c)
         {
-            if (c <= 0xFFFF)
-            {
-                indirectWriteConsoleW(console,
-                        cast(wchar*) &c, 1, null, null);
-            }
-            else
-            {
-                wchar[2] wbuf = void;
-                encode(wbuf, c);
-                indirectWriteConsoleW(console,
-                        wbuf.ptr, 2, null, null);
-            }
+            wchar[2] wbuf = void;
+            const wcLen = encode(wbuf, c);
+            putConsoleW(console, wbuf[0 .. wcLen]);
         }
 
         void putConsoleW(HANDLE console, in char[] str)
@@ -217,15 +239,8 @@ private:
             {
                 wchar[BUFFER_SIZE] wbuf = void;
                 const wsLen = inbuf.convert(wbuf);
-                indirectWriteConsoleW(console,
-                        wbuf.ptr, wsLen, null, null);
+                putConsoleW(console, wbuf[0 .. wsLen]);
             }
-        }
-
-        void putConsoleW(HANDLE console, in wchar[] str)
-        {
-            indirectWriteConsoleW(console,
-                    str.ptr, str.length, null, null);
         }
 
         void putConsoleW(HANDLE console, in dchar[] str)
@@ -234,8 +249,7 @@ private:
             {
                 wchar[BUFFER_SIZE] wbuf = void;
                 const wsLen = inbuf.convert(wbuf);
-                indirectWriteConsoleW(console,
-                        wbuf.ptr, wsLen, null, null);
+                putConsoleW(console, wbuf[0 .. wsLen]);
             }
         }
     } // Windows
@@ -246,13 +260,14 @@ private:
     File file_;     // the underlying File object
     int  useWide_;  // whether to use wide functions
 
+    version (Windows)
+        bool useWinConsole_;
+
     // XXX These should be in File.Impl for tracking the convertion state.
     alias .NarrowWriter!(UnsharedNarrowPutter) NarrowWriter;
     alias .WideWriter!(UnsharedWidePutter) WideWriter;
     NarrowWriter narrowWriter_;
     WideWriter   wideWriter_;
-
-    version (Windows) bool useWinConsole_;
 }
 
 
@@ -284,7 +299,7 @@ private struct UnsharedWidePutter
     {
         foreach (wchar_t wc; wcs)
             FPUTWC(wc, handle_);
-        errnoEnforce(ferror(cast(FILE*) handle_) == 0);
+        errnoEnforce(ferror(cast(shared) handle_) == 0);
     }
 }
 
@@ -512,9 +527,28 @@ version (Posix) private
     extern(C) @system
     {
         char* nl_langinfo(nl_item);
+//      char* nl_langinfo_l(nl_item, locale_t);
     }
 }
 
+
+/+
+//----------------------------------------------------------------------------//
+version (Posix) private
+{
+    typedef void* locale_t;
+
+    extern(C) @system
+    {
+        locale_t newlocale(int category_mask, const char *locale, locale_t base);
+        locale_t duplocale(locale_t locobj);
+        void     freelocale(locale_t locobj);
+        locale_t uselocale(locale_t newloc);
+    }
+}
+// TODO
+
++/
 
 //:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
 // NarrowWriter and WideWriter
@@ -1373,7 +1407,7 @@ private:
 
 import std.utf;
 
-version (unittest) private void expectError_()
+version (unittest) private bool expectError_(lazy void expr)
 {
     try { expr; } catch (UtfException e) { return true; }
     return false;
