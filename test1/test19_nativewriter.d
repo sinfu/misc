@@ -6,31 +6,42 @@ import core.stdc.locale;
 
 void main()
 {
-//  setlocale(LC_CTYPE, "ja_JP.eucJP");
-//  setlocale(LC_CTYPE, "ja_JP.SJIS");
+    setlocale(LC_CTYPE, "ja_JP.eucJP");
 //  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
-    setlocale(LC_CTYPE, "ja_JP.UTF-8");
+//  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 
 //  auto sink = File("a.txt", "w");
 //  auto sink = stderr;
-    auto sink = stdout;
+//  auto sink = stdout;
 
-//  fwide(sink.getFP(), -1);
-    fwide(sink.getFP(),  1);
+    fwide(sink.getFP(), -1);
+//  fwide(sink.getFP(),  1);
 
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
         //auto w = File.LockingTextWriter(sink);
         //formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
-        //foreach (i; 0 .. 1_000_000)
+        foreach (i; 0 .. 1_000_000)
         //foreach (i; 0 .. 100_000)
-        foreach (i; 0 .. 10)
+        //foreach (i; 0 .. 10)
             w.put("安倍川もち 生八つ橋 なごやん 雪の宿\n");
     }
     sink.writeln("...");
 }
+
+// LockingNativeTextWriter, narrow, UTF-8, 1_000_000, to file
+//      2.08s user 0.19s system 94% cpu 2.398 total
+
+// LockingNativeTextWriter, narrow, eucJP, 1_000_000, to file
+//      2.59s user 0.14s system 96% cpu 2.814 total
+
+// LockingTextWriter, wide, UTF-8, 1_000_000, to file
+//      2.72s user 0.16s system 99% cpu 2.910 total
+
+// LockingTextWriter, narrow, UTF-8, 1_000_000, to file
+//      0.88s user 0.19s system 62% cpu 1.729 total
 
 // use libiconv for debugging
 version (FreeBSD) debug = WITH_LIBICONV;
@@ -52,9 +63,6 @@ version (Windows) private
 {
     import core.sys.windows.windows;
 
-    /*
-     * fileno(), isatty(), osfhnd()
-     */
     version (DigitalMars)
     {
         extern(C)
@@ -68,6 +76,7 @@ version (Windows) private
     }
     else
     {
+        // fileno(), isatty(), osfhnd()
         static assert(0);
     }
 
@@ -81,11 +90,8 @@ version (Windows) private
 
 
 /**
- * An $(D output range) that locks the file and provides writing to it
- * in the multibyte encoding of the current locale.
- *
- * $(D LockingNativeTextWriter) accepts $(D dchar) and any $(D input
- * range) with elements of type $(D dchar).
+ * An $(D output range) that locks the file and provides writing to the
+ * file in the multibyte encoding of the current locale.
  */
 struct LockingNativeTextWriter
 {
@@ -94,10 +100,10 @@ struct LockingNativeTextWriter
      *
      * Params:
      *   file =
-     *     An opened $(D File) object to write in.
+     *     An opened $(D File) to write in.
      *
      *   replacement =
-     *     A valid multibyte string to use when a Unicode character
+     *     A valid multibyte string to use when a Unicode text
      *     cannot be represented in the current locale.  $(D
      *     LockingNativeTextWriter) will throw an exception on any
      *     non-representable character if this parameter is $(D null).
@@ -172,7 +178,7 @@ struct LockingNativeTextWriter
     }
 
     /// ditto
-    void put(C = dchar)(dchar c)
+    void put(C : dchar)(C c)
     {
         version (Windows)
         {
@@ -195,7 +201,6 @@ private:
     {
         enum size_t BUFFER_SIZE = 80;
 
-        // write a Unicode code point
         void putConsoleW(HANDLE console, dchar c)
         {
             if (c <= 0xFFFF)
@@ -212,32 +217,29 @@ private:
             }
         }
 
-        // write a UTF-8 string
         void putConsoleW(HANDLE console, in char[] str)
         {
             for (const(char)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE] wbuf = void;
-                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 indirectWriteConsoleW(console,
                         wbuf.ptr, wsLen, null, null);
             }
         }
 
-        // write a UTF-16 string
         void putConsoleW(HANDLE console, in wchar[] str)
         {
             indirectWriteConsoleW(console,
                     str.ptr, str.length, null, null);
         }
 
-        // write a UTF-32 string
         void putConsoleW(HANDLE console, in dchar[] str)
         {
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE] wbuf = void;
-                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 indirectWriteConsoleW(console,
                         wbuf.ptr, wsLen, null, null);
             }
@@ -542,7 +544,7 @@ private enum BUFFER_SIZE : size_t
     wchars =  80,
     dchars =  80,
 }
-static assert(BUFFER_SIZE.mchars >= MB_LEN_MAX);
+static assert(BUFFER_SIZE.mchars >= 2*MB_LEN_MAX);
 
 
 //----------------------------------------------------------------------------//
@@ -555,19 +557,23 @@ else static assert(0);
 
 version (NarrowWriter_convertWithC) version (HAVE_RANGED_MBWC)
 {
-    version (WCHART_WCHAR) version = NarrowWriter_wstringByChunk;
-    version (WCHART_DCHAR) version = NarrowWriter_dstringByChunk;
+    // whether to use wcsnrtombs()
+    version (WCHART_WCHAR) version = NarrowWriter_wcsnrtombsForWstring;
+    version (WCHART_DCHAR) version = NarrowWriter_wcsnrtombsForDstring;
 }
 
-version (NarrowWriter_wstringByChunk)   version = NarrowWriter_preferWstring;
-version (NarrowWriter_dstringByChunk)   version = NarrowWriter_preferDstring;
-version (NarrowWriter_convertWithIconv) version = NarrowWriter_preferDstring;
+version (NarrowWriter_wcsnrtombsForWstring)
+    version = NarrowWriter_preferWstring;
+version (NarrowWriter_wcsnrtombsForDstring)
+    version = NarrowWriter_preferDstring;
+version (NarrowWriter_convertWithIconv)
+    version = NarrowWriter_preferDstring;
 
 
 /**
  * An output range which converts UTF string or Unicode code point to the
- * corresponding multibyte character sequence in the current locale encoding
- * and puts the multibyte characters to another output range $(D Sink).
+ * corresponding multibyte character sequence in the current locale encoding.
+ * The converted multibyte string is written to another output range $(D Sink).
  */
 struct NarrowWriter(Sink)
     if (isOutputRange!(Sink, char[]))
@@ -599,7 +605,7 @@ struct NarrowWriter(Sink)
         context_ = new Context;
 
         // Validate the replacement string.
-        if (replacement)
+        if (replacement.length > 0)
         {
             version (HAVE_MBSTATE)
             {
@@ -643,7 +649,9 @@ struct NarrowWriter(Sink)
                 codeset = "US-ASCII";
             if (strcmp(codeset, "PCK") == 0)
                 codeset = "CP932";
-            context_.mbencode = iconv_open(codeset, ICONV_DSTRING);
+
+            const encoding = codeset;
+            context_.mbencode = iconv_open(encoding, ICONV_DSTRING);
             errnoEnforce(context_.mbencode != cast(iconv_t) -1,
                 "Cannot figure out how to convert Unicode to multibyte "
                 ~"character encoding");
@@ -683,7 +691,7 @@ struct NarrowWriter(Sink)
             for (const(char)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE.wchars] wbuf = void;
-                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 put(wbuf[0 .. wsLen]);
             }
         }
@@ -692,7 +700,7 @@ struct NarrowWriter(Sink)
             for (const(char)[] inbuf = str; inbuf.length > 0; )
             {
                 dchar[BUFFER_SIZE.dchars] dbuf = void;
-                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                const dsLen = inbuf.convert(dbuf);
                 put(dbuf[0 .. dsLen]);
             }
         }
@@ -712,11 +720,11 @@ struct NarrowWriter(Sink)
             for (const(wchar)[] inbuf = str; inbuf.length > 0; )
             {
                 dchar[BUFFER_SIZE.dchars] dbuf = void;
-                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                const dsLen = inbuf.convert(dbuf);
                 put(dbuf[0 .. dsLen]);
             }
         }
-        else version (NarrowWriter_wstringByChunk)
+        else version (NarrowWriter_wcsnrtombsForWstring)
         {
             // Convert UTF-16 to multibyte by chunk using wcsnrtombs().
             for (const(wchar)[] inbuf = str; inbuf.length > 0; )
@@ -745,8 +753,6 @@ struct NarrowWriter(Sink)
                     // Output the converted string.
                     sink_.put(mbuf[0 .. mbLen]);
                 }
-
-                sink_.put(mbuf[0 .. mbLen]);
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
         }
@@ -766,11 +772,11 @@ struct NarrowWriter(Sink)
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE.wchars] wbuf = void;
-                const wsLen = inbuf.toUTF32Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 put(wbuf[0 .. wsLen]);
             }
         }
-        else version (NarrowWriter_dstringByChunk)
+        else version (NarrowWriter_wcsnrtombsForDstring)
         {
             // Convert UTF-32 to multibyte by chunk using wcsnrtombs().
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
@@ -1027,6 +1033,7 @@ unittest
 
 version (WCHART_UNICODE)
 {
+    // Trivial UTF convertion.
     version = WideWriter_passThru;
          version (WCHART_WCHAR) version = WideWriter_passThruWstring;
     else version (WCHART_DCHAR) version = WideWriter_passThruDstring;
@@ -1045,8 +1052,8 @@ version (WideWriter_passThruDstring) version = WideWriter_preferDstring;
 
 /**
  * An output range which converts UTF string or Unicode code point to the
- * corresponding wide character sequence in the current locale code set
- * and puts the wide characters to another output range $(D Sink).
+ * corresponding wide character sequence in the current locale code set.
+ * The converted wide string is written to another output range $(D Sink).
  */
 struct WideWriter(Sink)
 {
@@ -1074,7 +1081,7 @@ struct WideWriter(Sink)
      * Note:
      * $(D replacement) is a multibyte string because it's hard to write
      * wide character sequence by hand on some $(I codeset independent)
-     * platforms such as NetBSD.
+     * platforms.
      */
     this(Sink sink, immutable(char)[] replacement = null)
     {
@@ -1112,7 +1119,7 @@ struct WideWriter(Sink)
             for (const(char)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE.wchars] wbuf = void;
-                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 put(wbuf[0 .. wsLen]);
             }
         }
@@ -1121,7 +1128,7 @@ struct WideWriter(Sink)
             for (const(char)[] inbuf = str; inbuf.length > 0; )
             {
                 dchar[BUFFER_SIZE.dchars] dbuf = void;
-                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                const dsLen = inbuf.convert(dbuf);
                 put(dbuf[0 .. dsLen]);
             }
         }
@@ -1140,7 +1147,7 @@ struct WideWriter(Sink)
             for (const(wchar)[] inbuf = str; inbuf.length > 0; )
             {
                 dchar[BUFFER_SIZE.dchars] dbuf = void;
-                const dsLen = inbuf.toUTF32Buffer(dbuf);
+                const dsLen = inbuf.convert(dbuf);
                 put(dbuf[0 .. dsLen]);
             }
         }
@@ -1163,7 +1170,7 @@ struct WideWriter(Sink)
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
                 wchar[BUFFER_SIZE.wchars] wbuf = void;
-                const wsLen = inbuf.toUTF16Buffer(wbuf);
+                const wsLen = inbuf.convert(wbuf);
                 put(wbuf[0 .. wsLen]);
             }
         }
@@ -1306,7 +1313,7 @@ private struct Widener(Sink)
         }
         else
         {
-            for (const(char)[] rest = mbs; rest.length > 0)
+            for (const(char)[] rest = mbs; rest.length > 0; )
             {
                 wchar_t wc;
                 size_t stat;
@@ -1347,311 +1354,739 @@ private:
 // std.utf extension
 ////////////////////////////////////////////////////////////////////////////////
 
-/**
- * Encodes a Unicode code point in UTF-16 and writes it to buf with zero
- * terminator (U+0).  Returns the number of code units written to buf
- * including the terminating zero.
- */
-size_t encodez(ref wchar[3] buf, dchar ch)
-{
-    size_t n = std.utf.encode(*cast(wchar[2]*) &buf, ch);
-    assert(n <= 2);
-    buf[n++] = 0;
-    return n;
-}
+import std.utf;
 
-unittest
+version (unittest) private void expectError_()
 {
-    wchar[3] bufz;
-    assert(encodez(bufz, '\u1000') == 2);
-    assert(bufz[0 .. 2] == "\u1000\u0000");
-    assert(encodez(bufz, '\U00020000') == 3);
-    assert(bufz[0 .. 3] == "\U00020000\u0000");
+    try { expr; } catch (UtfException e) { return true; }
+    return false;
 }
 
 
+//----------------------------------------------------------------------------//
+// UTF-8 to others
+//----------------------------------------------------------------------------//
+
 /**
- * Converts 
+ * Converts the UTF-8 string in $(D inbuf) to the corresponding UTF-16
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-16 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-8 sequence.
  *
  * Returns:
- *   The number of code units written to $(D outbuf).
+ *   The number of UTF-16 code units written to $(D outbuf).
  *
- * Example:
---------------------
-// Write unicode sequence without heap allocation.
-
-void output(in char[] str)
-{
-    dchar[80] buf;
-
-    for (const(char)[] src = str; src.length != 0; )
-    {
-        auto len = str.toUTF32Buffer(buf);
-        write_unicode(buf[0 .. len]);
-    }
-}
---------------------
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-8 sequence in
+ *   $(D inbuf).
  */
-size_t toUTF32Buffer(Char)(ref const(Char)[] inbuf, dchar[] outbuf) @safe
-    if (is(Char == char) || is(Char == wchar))
+size_t convert(ref const(char)[] inbuf, wchar[] outbuf) @safe
 {
-    auto curin = inbuf;
-    auto curout = outbuf;
+    const(char)[] curin = inbuf;
+    wchar[] curout = outbuf;
 
     while (curin.length != 0 && curout.length != 0)
     {
-        curout[0] = curin.decode();
-        curout = curout[1 .. $];
-    }
-    inbuf = curin;
-    return outbuf.length - curout.length;
-}
+        const u1 = curin[0];
 
-unittest
-{
-    const(char)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
-        ~"\U00010000\U0010FFFF";
-    dchar[6] dstbuf;
-
-    assert(src.toUTF32Buffer(dstbuf) == 6);
-    assert(src.length == 14);
-    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
-
-    assert(src.toUTF32Buffer(dstbuf) == 4);
-    assert(src.length == 0);
-    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
-}
-
-unittest
-{
-    const(wchar)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
-        ~"\U00010000\U0010FFFF";
-    dchar[6] dstbuf;
-
-    assert(src.toUTF32Buffer(dstbuf) == 6);
-    assert(src.length == 6);
-    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
-
-    assert(src.toUTF32Buffer(dstbuf) == 4);
-    assert(src.length == 0);
-    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
-}
-
-
-/**
- * Ditto
- */
-size_t toUTF16Buffer(Char)(ref const(Char)[] inbuf, wchar[] outbuf) @safe
-    if (is(Char == char) || is(Char == dchar))
-{
-    auto curin = inbuf;
-    auto curout = outbuf;
-
-    while (curin.length != 0)
-    {
-        auto nextin = curin;
-        auto c = nextin.decode();
-
-        if (c <= 0xFFFF)
+        if ((u1 & 0b10000000) == 0)
         {
-            if (curout.length < 1)
-                break;
-            curout[0] = cast(wchar) c;
+            // 0xxxxxxx (U+0 - U+7F)
+            curout[0] = u1;
             curout = curout[1 .. $];
+            curin  = curin [1 .. $];
         }
-        else
+        else if ((u1 & 0b11100000) == 0b11000000)
         {
+            // 110xxxxx 10xxxxxx (U+80 - U+7FF)
+            if (curin.length < 2)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            const u2 = curin[1];
+            if ((u2 & 0b11000000) ^ 0b10000000)
+                throw new UtfException("decoding UTF-8", u1, u2);
+
+            // the corresponding UTF-16 code unit
+            uint w;
+            w =             u1 & 0b00011111;
+            w = (w << 6) | (u2 & 0b00111111);
+            if (w < 0x80)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2);
+            assert(0x80 <= w && w <= 0x7FF);
+
+            curout[0] = cast(wchar) w;
+            curout = curout[1 .. $];
+            curin  = curin [2 .. $];
+        }
+        else if ((u1 & 0b11110000) == 0b11100000)
+        {
+            // 1110xxxx 10xxxxxx 10xxxxxx (U+800 - U+FFFF)
+            if (curin.length < 3)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            const u2 = curin[1];
+            const u3 = curin[2];
+            if ( ((u2 & 0b11000000) ^ 0b10000000) |
+                 ((u3 & 0b11000000) ^ 0b10000000) )
+                throw new UtfException("decoding UTF-8", u1, u2, u3);
+
+            // the corresponding UTF-16 code unit
+            uint w;
+            w =             u1 & 0b00001111;
+            w = (w << 6) | (u2 & 0b00111111);
+            w = (w << 6) | (u3 & 0b00111111);
+            if (w < 0x800)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2, u3);
+            if ((w & 0xF800) == 0xD800)
+                throw new UtfException("surrogate code point in UTF-8", w);
+            assert(0x800 <= w && w <= 0xFFFF);
+            assert(w < 0xD800 || 0xDFFF < w);
+
+            curout[0] = cast(wchar) w;
+            curout = curout[1 .. $];
+            curin  = curin [3 .. $];
+        }
+        else if ((u1 & 0b11111000) == 0b11110000)
+        {
+            // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx (U+10000 - U+10FFFF)
+            if (curin.length < 4)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            // The code point needs surrogate-pair encoding.
             if (curout.length < 2)
-                break;
+                break; // No room; stop converting.
+
+            const u2 = curin[1];
+            const u3 = curin[2];
+            const u4 = curin[3];
+            if ( ((u2 & 0b11000000) ^ 0b10000000) |
+                 ((u3 & 0b11000000) ^ 0b10000000) |
+                 ((u4 & 0b11000000) ^ 0b10000000) )
+                throw new UtfException("decoding UTF-8", u1, u2, u3, u4);
+
+            // First calculate the corresponding Unicode code point, and then
+            // compose a surrogate pair.
+            uint c;
+            c =             u1 & 0b00000111;
+            c = (c << 6) | (u2 & 0b00111111);
+            c = (c << 6) | (u3 & 0b00111111);
+            c = (c << 6) | (u4 & 0b00111111);
+            if (c < 0x10000)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2, u3, u4);
+            assert(0x10000 <= c && c <= 0x10FFFF);
+
             curout[0] = cast(wchar) ((((c - 0x10000) >> 10) & 0x3FF) + 0xD800);
             curout[1] = cast(wchar) (( (c - 0x10000)        & 0x3FF) + 0xDC00);
             curout = curout[2 .. $];
+            curin  = curin [4 .. $];
         }
-        curin = nextin;
+        else
+        {
+            // invalid 5/6-byte UTF-8 or trailing byte 10xxxxxx
+            throw new UtfException("illegal UTF-8 leading byte", u1);
+        }
     }
+
     inbuf = curin;
     return outbuf.length - curout.length;
 }
 
+/// ditto
+size_t convert(ref immutable(char)[] inbuf, wchar[] outbuf) @safe
+{
+    const(char)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
 unittest
 {
-    const(char)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+    string s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
         ~"\U00010000\U0010FFFF";
     wchar[6] dstbuf;
 
-    assert(src.toUTF16Buffer(dstbuf) == 6);
-    assert(src.length == 14);
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 14);
     assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
 
-    assert(src.toUTF16Buffer(dstbuf) == 6);
-    assert(src.length == 0);
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 0);
     assert(dstbuf[0 .. 6] == "\uE000\uFFFD\U00010000\U0010FFFF");
 }
 
+
+/**
+ * Converts the UTF-8 string in $(D inbuf) to the corresponding UTF-32
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-32 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-8 sequence.
+ *
+ * Returns:
+ *   The number of UTF-32 code units, or Unicode code points, written
+ *   to $(D outbuf).
+ *
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-8 sequence
+ *   in $(D inbuf).
+ */
+size_t convert(ref const(char)[] inbuf, dchar[] outbuf) @safe
+{
+    const(char)[] curin = inbuf;
+    dchar[] curout = outbuf;
+
+    while (curin.length != 0 && curout.length != 0)
+    {
+        const u1 = curin[0];
+
+        if ((u1 & 0b10000000) == 0)
+        {
+            // 0xxxxxxx (U+0 - U+7F)
+            curout[0] = u1;
+            curout = curout[1 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if ((u1 & 0b11100000) == 0b11000000)
+        {
+            // 110xxxxx 10xxxxxx (U+80 - U+7FF)
+            if (curin.length < 2)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            const u2 = curin[1];
+            if ((u2 & 0b11000000) ^ 0b10000000)
+                throw new UtfException("decoding UTF-8", u1, u2);
+
+            // the corresponding code point
+            uint c;
+            c =             u1 & 0b00011111;
+            c = (c << 6) | (u2 & 0b00111111);
+            if (c < 0x80)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2);
+            assert(0x80 <= c && c <= 0x7FF);
+
+            curout[0] = cast(dchar) c;
+            curout = curout[1 .. $];
+            curin  = curin [2 .. $];
+        }
+        else if ((u1 & 0b11110000) == 0b11100000)
+        {
+            // 1110xxxx 10xxxxxx 10xxxxxx (U+800 - U+FFFF)
+            if (curin.length < 3)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            const u2 = curin[1];
+            const u3 = curin[2];
+            if ( ((u2 & 0b11000000) ^ 0b10000000) |
+                 ((u3 & 0b11000000) ^ 0b10000000) )
+                throw new UtfException("decoding UTF-8", u1, u2, u3);
+
+            // the corresponding code point
+            uint c;
+            c =             u1 & 0b00001111;
+            c = (c << 6) | (u2 & 0b00111111);
+            c = (c << 6) | (u3 & 0b00111111);
+            if (c < 0x800)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2, u3);
+            if ((c & 0xF800) == 0xD800)
+                throw new UtfException("surrogate code point in UTF-8", c);
+            assert(0x800 <= c && c <= 0xFFFF);
+            assert(c < 0xD800 || 0xDFFF < c);
+
+            curout[0] = cast(dchar) c;
+            curout = curout[1 .. $];
+            curin  = curin [3 .. $];
+        }
+        else if ((u1 & 0b11111000) == 0b11110000)
+        {
+            // 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx (U+10000 - U+10FFFF)
+            if (curin.length < 4)
+                throw new UtfException("missing trailing UTF-8 sequence", u1);
+
+            const u2 = curin[1];
+            const u3 = curin[2];
+            const u4 = curin[3];
+            if ( ((u2 & 0b11000000) ^ 0b10000000) |
+                 ((u3 & 0b11000000) ^ 0b10000000) |
+                 ((u4 & 0b11000000) ^ 0b10000000) )
+                throw new UtfException("decoding UTF-8", u1, u2, u3, u4);
+
+            // the corresponding code point
+            uint c;
+            c =             u1 & 0b00000111;
+            c = (c << 6) | (u2 & 0b00111111);
+            c = (c << 6) | (u3 & 0b00111111);
+            c = (c << 6) | (u4 & 0b00111111);
+            if (c < 0x10000)
+                throw new UtfException("overlong UTF-8 sequence", u1, u2, u3, u4);
+            assert(0x10000 <= c && c <= 0x10FFFF);
+
+            curout[0] = cast(dchar) c;
+            curout = curout[1 .. $];
+            curin  = curin [4 .. $];
+        }
+        else
+        {
+            // invalid 5/6-byte UTF-8 or trailing byte 10xxxxxx
+            throw new UtfException("illegal UTF-8 leading byte", u1);
+        }
+    }
+
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+/// ditto
+size_t convert(ref immutable(char)[] inbuf, dchar[] outbuf) @safe
+{
+    const(char)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
 unittest
 {
-    const(dchar)[] src = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+    string s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    dchar[6] dstbuf;
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 14);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 0);
+    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
+}
+
+
+//----------------------------------------------------------------------------//
+// UTF-16 to others
+//----------------------------------------------------------------------------//
+
+/**
+ * Converts the UTF-16 string in $(D inbuf) to the corresponding UTF-8
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-8 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-16 sequence.
+ *
+ * Returns:
+ *   The number of UTF-8 code units written to $(D outbuf).
+ *
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-16 sequence in
+ *   $(D inbuf).
+ */
+size_t convert(ref const(wchar)[] inbuf, char[] outbuf) @safe
+{
+    const(wchar)[] curin = inbuf;
+    char[] curout = outbuf;
+
+    while (curin.length != 0)
+    {
+        wchar w = curin[0];
+
+        if (w <= 0x7F)
+        {
+            // UTF-8: 0xxxxxxx
+            if (curout.length < 1)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) w;
+            curout = curout[1 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if (w <= 0x7FF)
+        {
+            // UTF-8: 110xxxxx 10xxxxxx
+            if (curout.length < 2)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) (0b11000000 | (w >> 6        ));
+            curout[1] = cast(char) (0b10000000 | (w & 0b00111111));
+            curout = curout[2 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if ((w & 0xF800) != 0xD800)
+        {
+            // UTF-8: 1110xxxx 10xxxxxx 10xxxxxx
+            if (curout.length < 3)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) (0b11100000 |  (w >> 12)              );
+            curout[1] = cast(char) (0b10000000 | ((w >> 6 ) & 0b00111111));
+            curout[2] = cast(char) (0b10000000 | ( w        & 0b00111111));
+            curout = curout[3 .. $];
+            curin  = curin [1 .. $];
+        }
+        else // Found a surrogate code unit.
+        {
+            if ((w & 0xFC00) == 0xDC00)
+                throw new UtfException("isolated low surrogate", w);
+            assert((w & 0xFC00) == 0xD800);
+
+            wchar w1 = w;
+            wchar w2 = curin[1];
+            if ((w2 & 0xFC00) != 0xDC00)
+                throw new UtfException("isolated high surrogate", w1, w2);
+
+            // UTF-8: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            if (curout.length < 4)
+                break; // No room; stop converting.
+
+            // First calculate the corresponding Unicode code point, and then
+            // compose the UTF-8 sequence.
+            uint c;
+            c =              w1 - 0xD7C0;
+            c = (c << 10) | (w2 - 0xDC00);
+            assert(0x10000 <= c && c <= 0x10FFFF);
+
+            curout[0] = cast(char) (0b11110000 | ( c >> 18)              );
+            curout[1] = cast(char) (0b10000000 | ((c >> 12) & 0b00111111));
+            curout[2] = cast(char) (0b10000000 | ((c >>  6) & 0b00111111));
+            curout[3] = cast(char) (0b10000000 | ( c        & 0b00111111));
+            curout = curout[4 .. $];
+            curin  = curin [2 .. $];
+        }
+    }
+
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+/// ditto
+size_t convert(ref immutable(wchar)[] inbuf, char[] outbuf) @safe
+{
+    const(wchar)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
+unittest
+{
+    wstring s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    char[6] dstbuf;
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 8);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF");
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 6);
+    assert(dstbuf[0 .. 6] == "\u0800\uD7FF");
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 4);
+    assert(dstbuf[0 .. 6] == "\uE000\uFFFD");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 2);
+    assert(dstbuf[0 .. 4] == "\U00010000");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 0);
+    assert(dstbuf[0 .. 4] == "\U0010FFFF");
+}
+
+
+/**
+ * Converts the UTF-16 string in $(D inbuf) to the corresponding UTF-32
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-32 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-16 sequence.
+ *
+ * Returns:
+ *   The number of UTF-32 code units written to $(D outbuf).
+ *
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-16 sequence in
+ *   $(D inbuf).
+ */
+size_t convert(ref const(wchar)[] inbuf, dchar[] outbuf) @safe
+{
+    const(wchar)[] curin = inbuf;
+    dchar[] curout = outbuf;
+
+    while (curin.length != 0 && curout.length != 0)
+    {
+        wchar w = curin[0];
+
+        if ((w & 0xF800) != 0xD800)
+        {
+            curout[0] = w;
+            curout = curout[1 .. $];
+            curin  = curin [1 .. $];
+        }
+        else // surrogate code unit
+        {
+            if ((w & 0xFC00) == 0xDC00)
+                throw new UtfException("isolated low surrogate", w);
+            assert((w & 0xFC00) == 0xD800);
+
+            wchar w1 = w;
+            wchar w2 = curin[1];
+            if ((w2 & 0xFC00) != 0xDC00)
+                throw new UtfException("isolated high surrogate", w1, w2);
+
+            // Calculate the corresponding Unicode code point.
+            uint c;
+            c =              w1 - 0xD7C0;
+            c = (c << 10) | (w2 - 0xDC00);
+            assert(0x10000 <= c && c <= 0x10FFFF);
+
+            curout[0] = cast(dchar) c;
+            curout = curout[1 .. $];
+            curin  = curin [2 .. $];
+        }
+    }
+
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+/// ditto
+size_t convert(ref immutable(wchar)[] inbuf, dchar[] outbuf) @safe
+{
+    const(wchar)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
+unittest
+{
+    wstring s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    dchar[6] dstbuf;
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 6);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF\u0800\uD7FF");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 0);
+    assert(dstbuf[0 .. 4] == "\uE000\uFFFD\U00010000\U0010FFFF");
+}
+
+
+//----------------------------------------------------------------------------//
+// UTF-32 to others
+//----------------------------------------------------------------------------//
+
+/**
+ * Converts the UTF-32 string in $(D inbuf) to the corresponding UTF-8
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-8 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-32 code unit.
+ *
+ * Returns:
+ *   The number of UTF-8 code units written to $(D outbuf).
+ *
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-32 sequence in
+ *   $(D inbuf).
+ */
+size_t convert(ref const(dchar)[] inbuf, char[] outbuf) @safe
+{
+    const(dchar)[] curin = inbuf;
+    char[] curout = outbuf;
+
+    while (curin.length != 0)
+    {
+        dchar c = curin[0];
+
+        if (c <= 0x7F)
+        {
+            // UTF-8: 0xxxxxxx
+            if (curout.length < 1)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) c;
+            curout = curout[1 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if (c <= 0x7FF)
+        {
+            // UTF-8: 110xxxxx 10xxxxxx
+            if (curout.length < 2)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) (0b11000000 | (c >> 6        ));
+            curout[1] = cast(char) (0b10000000 | (c & 0b00111111));
+            curout = curout[2 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if (c <= 0xFFFF)
+        {
+            // UTF-8: 1110xxxx 10xxxxxx 10xxxxxx
+            if (curout.length < 3)
+                break; // No room; stop converting.
+
+            curout[0] = cast(char) (0b11100000 |  (c >> 12)              );
+            curout[1] = cast(char) (0b10000000 | ((c >> 6 ) & 0b00111111));
+            curout[2] = cast(char) (0b10000000 | ( c        & 0b00111111));
+            curout = curout[3 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if (c <= 0x10FFFF)
+        {
+            // UTF-8: 11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+            if (curout.length < 4)
+                break; // No room; stop converting.
+
+            assert(0x10000 <= c && c <= 0x10FFFF);
+            curout[0] = cast(char) (0b11110000 | ( c >> 18)              );
+            curout[1] = cast(char) (0b10000000 | ((c >> 12) & 0b00111111));
+            curout[2] = cast(char) (0b10000000 | ((c >>  6) & 0b00111111));
+            curout[3] = cast(char) (0b10000000 | ( c        & 0b00111111));
+            curout = curout[4 .. $];
+            curin  = curin [1 .. $];
+        }
+        else
+        {
+            // Any code point larger than U+10FFFF is invalid.
+            throw new UtfException("decoding UTF-32", c);
+        }
+    }
+
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+/// ditto
+size_t convert(ref immutable(dchar)[] inbuf, char[] outbuf) @safe
+{
+    const(dchar)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
+unittest
+{
+    dstring s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
+        ~"\U00010000\U0010FFFF";
+    char[6] dstbuf;
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 6);
+    assert(dstbuf[0 .. 6] == "\u0000\u007F\u0080\u07FF");
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 4);
+    assert(dstbuf[0 .. 6] == "\u0800\uD7FF");
+
+    assert(s.convert(dstbuf) == 6);
+    assert(s.length == 2);
+    assert(dstbuf[0 .. 6] == "\uE000\uFFFD");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 1);
+    assert(dstbuf[0 .. 4] == "\U00010000");
+
+    assert(s.convert(dstbuf) == 4);
+    assert(s.length == 0);
+    assert(dstbuf[0 .. 4] == "\U0010FFFF");
+}
+
+
+/**
+ * Converts the UTF-16 string in $(D inbuf) to the corresponding UTF-32
+ * string in $(D outbuf), upto $(D outbuf.length) UTF-32 code units.
+ * Upon successful return, $(D inbuf) will be advanced to immediately
+ * after the last converted UTF-16 sequence.
+ *
+ * Returns:
+ *   The number of UTF-32 code units written to $(D outbuf).
+ *
+ * Throws:
+ *   $(D UtfException) on encountering a malformed UTF-16 sequence in
+ *   $(D inbuf).
+ */
+size_t convert(ref const(dchar)[] inbuf, wchar[] outbuf) @safe
+{
+    const(dchar)[] curin = inbuf;
+    wchar[] curout = outbuf;
+
+    while (curin.length != 0 && curout.length != 0)
+    {
+        dchar c = curin[0];
+
+        if (c <= 0xFFFF)
+        {
+            if ((c & 0xF800) == 0xD800)
+                throw new UtfException(
+                    "surrogate code point in UTF-32", c);
+
+            curout[0] = cast(wchar) c;
+            curout = curout[1 .. $];
+            curin  = curin [1 .. $];
+        }
+        else if (c <= 0x10FFFF)
+        {
+            // Needs surrogate pair.
+            if (curout.length < 2)
+                break; // No room; stop converting.
+
+            assert(0x10000 <= c && c <= 0x10FFFF);
+            curout[0] = cast(wchar) ((((c - 0x10000) >> 10) & 0x3FF) + 0xD800);
+            curout[1] = cast(wchar) (( (c - 0x10000)        & 0x3FF) + 0xDC00);
+            curout = curout[2 .. $];
+            curin  = curin [1 .. $];
+        }
+        else
+        {
+            // Any code point larger than U+10FFFF is invalid.
+            throw new UtfException("decoding UTF-32", c);
+        }
+    }
+
+    inbuf = curin;
+    return outbuf.length - curout.length;
+}
+
+/// ditto
+size_t convert(ref immutable(dchar)[] inbuf, wchar[] outbuf) @safe
+{
+    const(dchar)[] inbuf_ = inbuf;
+    const result = convert(inbuf_, outbuf);
+    assert(inbuf.ptr <= inbuf_.ptr && inbuf_.ptr <= inbuf.ptr + inbuf.length);
+    inbuf = cast(immutable) inbuf_;
+    return result;
+}
+
+unittest
+{
+    dstring s = "\u0000\u007F\u0080\u07FF\u0800\uD7FF\uE000\uFFFD"
         ~"\U00010000\U0010FFFF";
     wchar[3] dstbuf;
 
-    assert(src.toUTF16Buffer(dstbuf) == 3);
-    assert(src.length == 7);
+    assert(s.convert(dstbuf) == 3);
+    assert(s.length == 7);
     assert(dstbuf[0 .. 3] == "\u0000\u007F\u0080");
 
-    assert(src.toUTF16Buffer(dstbuf) == 3);
-    assert(src.length == 4);
+    assert(s.convert(dstbuf) == 3);
+    assert(s.length == 4);
     assert(dstbuf[0 .. 3] == "\u07FF\u0800\uD7FF");
 
-    assert(src.toUTF16Buffer(dstbuf) == 2);
-    assert(src.length == 2);
+    assert(s.convert(dstbuf) == 2);
+    assert(s.length == 2);
     assert(dstbuf[0 .. 2] == "\uE000\uFFFD");
 
-    assert(src.toUTF16Buffer(dstbuf) == 2);
-    assert(src.length == 1);
+    assert(s.convert(dstbuf) == 2);
+    assert(s.length == 1);
     assert(dstbuf[0 .. 2] == "\U00010000");
 
-    assert(src.toUTF16Buffer(dstbuf) == 2);
-    assert(src.length == 0);
+    assert(s.convert(dstbuf) == 2);
+    assert(s.length == 0);
     assert(dstbuf[0 .. 2] == "\U0010FFFF");
-}
-
-
-/**
- * TODO document
- */
-dchar decode(ref const(char)[] inbuf) @safe
-in
-{
-    assert(inbuf.length > 0);
-}
-body
-{
-    size_t inLen;
-    dchar c;
-    const u1 = inbuf[0];
-
-    if ((u1 & 0x80) == 0)
-    {
-        inLen = 1;
-        c = u1;
-    }
-    else if ((u1 & 0xE0) == 0xC0)
-    {
-        const u2 = inbuf[1];
-        if ((u1 & 0xEF) == 0xC0)
-            throw new Exception("overlong", __FILE__, __LINE__);
-        if ((u2 & 0xC0) != 0x80)
-            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
-
-        inLen = 2;
-        c = u1 & 0x1F;
-        c = (c << 6) | (u2 & 0x3F);
-    }
-    else if ((u1 & 0xF0) == 0xE0)
-    {
-        const u2 = inbuf[1];
-        const u3 = inbuf[2];
-        if (u1 == 0xE0 && (u2 & 0x1F))
-            throw new Exception("overlong", __FILE__, __LINE__);
-        if ((u2 & u3 & 0xC0) != 0x80)
-            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
-
-        inLen = 3;
-        c = u1 & 0x0F;
-        c = (c << 6) | (u2 & 0x3F);
-        c = (c << 6) | (u3 & 0x3F);
-    }
-    else if ((u1 & 0xF8) == 0xF0)
-    {
-        const u2 = inbuf[1];
-        const u3 = inbuf[2];
-        const u4 = inbuf[3];
-        if (u1 == 0xF0 && (u2 & 0x0F))
-            throw new Exception("overlong", __FILE__, __LINE__);
-        if ((u2 & u3 & u4 & 0xC0) != 0x80)
-            throw new Exception("incomplete UTF-8 sequence", __FILE__, __LINE__);
-
-        inLen = 4;
-        c = u1 & 0x07;
-        c = (c << 6) | (u2 & 0x3F);
-        c = (c << 6) | (u3 & 0x3F);
-        c = (c << 6) | (u4 & 0x3F);
-    }
-    else
-    {
-        throw new Exception("illegal UTF-8 sequence", __FILE__, __LINE__);
-    }
-
-    inbuf = inbuf[inLen .. $];
-    return c;
-}
-
-unittest
-{
-}
-
-
-/**
- * Ditto
- */
-dchar decode(ref const(wchar)[] inbuf) @safe
-in
-{
-    assert(inbuf.length > 0);
-}
-body
-{
-    size_t inLen;
-    dchar c;
-    const w = inbuf[0];
-
-    if (w < 0x7F)
-    {
-        c = w;
-        inLen = 1;
-    }
-    else if (w < 0xD800 || 0xDBFF < w)
-    {
-        if (0xDC00 <= w && w <= 0xDFFF)
-            throw new Exception(
-                "encountered an isolated low surrogate code unit "
-                ~"in a UTF-16 string", __FILE__, __LINE__);
-        c = w;
-        inLen = 1;
-    }
-    else if (0xD800 <= w && w <= 0xDBFF)
-    {
-        wchar ww = inbuf[1];
-
-        if (ww < 0xDC00 || 0xDFFF < ww)
-            throw new Exception(
-                "encountered an isolated high surrogate code unit "
-                ~"in a UTF-16 string", __FILE__, __LINE__);
-        c = ((w - 0xD7C0) << 10) + (ww - 0xDC00);
-        inLen = 2;
-    }
-
-    inbuf = inbuf[inLen .. $];
-    return c;
-}
-
-unittest
-{
-}
-
-
-/**
- * Ditto
- */
-dchar decode(ref const(dchar)[] inbuf) @safe
-{
-    auto c = inbuf[0];
-    inbuf = inbuf[1 .. $];
-    return c;
-}
-
-unittest
-{
 }
 
 
