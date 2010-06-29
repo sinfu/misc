@@ -669,9 +669,9 @@ version (NarrowWriter_convertWithC)
         // Whether to use wcrtomb() with buffering for converting UTF
         // string to multibyte string by chunk.
         version (WCHART_WCHAR)
-            version = NarrowWriterbufferedWcrtombForWstring;
+            version = NarrowWriter_bufferedWcrtombForWstring;
         version (WCHART_DCHAR)
-            version = NarrowWriterbufferedWcrtombForDstring;
+            version = NarrowWriter_bufferedWcrtombForDstring;
     }
 }
 
@@ -680,9 +680,9 @@ version (NarrowWriter_wcsnrtombsForWstring)
 version (NarrowWriter_wcsnrtombsForDstring)
     version = NarrowWriter_preferDstring;
 
-version (NarrowWriterbufferedWcrtombForWstring)
+version (NarrowWriter_bufferedWcrtombForWstring)
     version = NarrowWriter_preferWstring;
-version (NarrowWriterbufferedWcrtombForDstring)
+version (NarrowWriter_bufferedWcrtombForDstring)
     version = NarrowWriter_preferDstring;
 
 version (NarrowWriter_convertWithIconv)
@@ -875,7 +875,7 @@ struct NarrowWriter(Sink)
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
         }
-        else version (NarrowWriterbufferedWcrtombForWstring)
+        else version (NarrowWriter_bufferedWcrtombForWstring)
         {
             // Convert UTF-16 to multibyte with buffering.
             char[BUFFER_SIZE.mchars] mbuf = void;
@@ -999,7 +999,7 @@ struct NarrowWriter(Sink)
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
         }
-        else version (NarrowWriterbufferedWcrtombForDstring)
+        else version (NarrowWriter_bufferedWcrtombForDstring)
         {
             // Convert UTF-32 to multibyte with buffering.
             char[BUFFER_SIZE.mchars] mbuf = void;
