@@ -6,42 +6,36 @@ import core.stdc.locale;
 
 void main()
 {
-    setlocale(LC_CTYPE, "ja_JP.eucJP");
-//  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
 //  setlocale(LC_CTYPE, "ja_JP.UTF-8");
+//  setlocale(LC_CTYPE, "ja_JP.eucJP");
+    setlocale(LC_CTYPE, "");
 
 //  auto sink = File("a.txt", "w");
-//  auto sink = stderr;
-//  auto sink = stdout;
+    auto sink = stdout;
 
-    fwide(sink.getFP(), -1);
+//  fwide(sink.getFP(), -1);
 //  fwide(sink.getFP(),  1);
 
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
         //auto w = File.LockingTextWriter(sink);
-        //formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
+        formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
 
-        foreach (i; 0 .. 1_000_000)
-        //foreach (i; 0 .. 100_000)
-        //foreach (i; 0 .. 10)
-            w.put("安倍川もち 生八つ橋 なごやん 雪の宿\n");
+        foreach (i; 0 .. 10)
+        {
+            w.put("ロッキング"c);
+            w.put(' ');
+            w.put("ねいてぃぶ"w);
+            w.put(' ');
+            w.put("text"d);
+            w.put(' ');
+            w.put("書込器");
+            w.put('\n');
+        }
     }
-    sink.writeln("...");
 }
 
-// LockingNativeTextWriter, narrow, UTF-8, 1_000_000, to file
-//      2.08s user 0.19s system 94% cpu 2.398 total
-
-// LockingNativeTextWriter, narrow, eucJP, 1_000_000, to file
-//      2.59s user 0.14s system 96% cpu 2.814 total
-
-// LockingTextWriter, wide, UTF-8, 1_000_000, to file
-//      2.72s user 0.16s system 99% cpu 2.910 total
-
-// LockingTextWriter, narrow, UTF-8, 1_000_000, to file
-//      0.88s user 0.19s system 62% cpu 1.729 total
 
 // use libiconv for debugging
 version (FreeBSD) debug = WITH_LIBICONV;
@@ -80,10 +74,10 @@ version (Windows) private
         static assert(0);
     }
 
-    immutable typeof(WriteConsoleW)* indirectWriteConsoleW;
+    const typeof(WriteConsoleW)* indirectWriteConsoleW;
     static this()
     {
-        indirectWriteConsoleW = cast(typeof(indirectWriteConsoleW))
+        indirectWriteConsoleW = cast(typeof(WriteConsoleW)*)
             GetProcAddress(GetModuleHandleA("kernel32.dll"), "WriteConsoleW");
     }
 }
@@ -545,6 +539,29 @@ private enum BUFFER_SIZE : size_t
     dchars =  80,
 }
 static assert(BUFFER_SIZE.mchars >= 2*MB_LEN_MAX);
+
+
+/*
+ * Encodes a Unicode code point in UTF-16 and writes it to buf with zero
+ * terminator (U+0).  Returns the number of code units written to buf
+ * including the terminating zero.
+ */
+private size_t encodez(ref wchar[3] buf, dchar ch)
+{
+    size_t n = std.utf.encode(*cast(wchar[2]*) &buf, ch);
+    assert(n <= 2);
+    buf[n++] = 0;
+    return n;
+}
+
+unittest
+{
+    wchar[3] bufz;
+    assert(encodez(bufz, '\u1000') == 2);
+    assert(bufz[0 .. 2] == "\u1000\u0000");
+    assert(encodez(bufz, '\U00020000') == 3);
+    assert(bufz[0 .. 3] == "\U00020000\u0000");
+}
 
 
 //----------------------------------------------------------------------------//
@@ -2088,5 +2105,4 @@ unittest
     assert(s.length == 0);
     assert(dstbuf[0 .. 2] == "\U0010FFFF");
 }
-
 
