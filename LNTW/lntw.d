@@ -15,7 +15,7 @@ void main()
 //  auto sink = File("a.txt", "w");
     auto sink = stdout;
 
-//  fwide(sink.getFP(), -1);
+    fwide(sink.getFP(), -1);
 //  fwide(sink.getFP(),  1);
 
     {
@@ -483,8 +483,58 @@ private
             assert(mbsinit(&mbst));
         }
     }
+}
 
+private extern(C) @system
+{
     enum size_t MB_LEN_MAX = 16;
+
+    version (Windows)
+    {
+        version (DigitalMars)
+        {
+            extern __gshared size_t __locale_mbsize;
+            alias __locale_mbsize MB_CUR_MAX;
+        }
+        else static assert(0);
+    }
+    else version (linux)
+    {
+        size_t __ctype_get_mb_cur_max();
+        alias __ctype_get_mb_cur_max MB_CUR_MAX;
+    }
+    else version (OSX)
+    {
+        extern __gshared size_t __mb_cur_max;   // XXX ?
+        alias __mb_cur_max MB_CUR_MAX;
+    }
+    else version (FreeBSD)
+    {
+        extern __gshared size_t __mb_cur_max;
+        alias __mb_cur_max MB_CUR_MAX;
+    }
+    /+
+    else version (NetBSD)
+    {
+        extern __gshared size_t __mb_cur_max;
+        alias __mb_cur_max MB_CUR_MAX;
+    }
+    else version (Solaris)
+    {
+        extern ubyte* __ctype;
+        size_t MB_CUR_MAX() { return __ctpye[520]; }
+    }
+    +/
+    else static assert(0);
+
+    unittest
+    {
+        if (setlocale(LC_CTYPE, "en_US.UTF-8") != null)
+        {
+            scope(exit) setlocale(LC_CTYPE, "C");
+            assert(MB_CUR_MAX == 4 || MB_CUR_MAX == 6);
+        }
+    }
 }
 
 
@@ -606,17 +656,35 @@ unittest
 else version (HAVE_ICONV)     version = NarrowWriter_convertWithIconv;
 else static assert(0);
 
-version (NarrowWriter_convertWithC) version (HAVE_RANGED_MBWC)
+version (NarrowWriter_convertWithC)
 {
-    // whether to use wcsnrtombs()
-    version (WCHART_WCHAR) version = NarrowWriter_wcsnrtombsForWstring;
-    version (WCHART_DCHAR) version = NarrowWriter_wcsnrtombsForDstring;
+    version (/+HAVE_RANGED_MBWC+/ none) // can't support replacement with
+                                        // wcsnrtombs()
+    {
+        version (WCHART_WCHAR) version = NarrowWriter_wcsnrtombsForWstring;
+        version (WCHART_DCHAR) version = NarrowWriter_wcsnrtombsForDstring;
+    }
+    else
+    {
+        // Whether to use wcrtomb() with buffering for converting UTF
+        // string to multibyte string by chunk.
+        version (WCHART_WCHAR)
+            version = NarrowWriterbufferedWcrtombForWstring;
+        version (WCHART_DCHAR)
+            version = NarrowWriterbufferedWcrtombForDstring;
+    }
 }
 
 version (NarrowWriter_wcsnrtombsForWstring)
     version = NarrowWriter_preferWstring;
 version (NarrowWriter_wcsnrtombsForDstring)
     version = NarrowWriter_preferDstring;
+
+version (NarrowWriterbufferedWcrtombForWstring)
+    version = NarrowWriter_preferWstring;
+version (NarrowWriterbufferedWcrtombForDstring)
+    version = NarrowWriter_preferDstring;
+
 version (NarrowWriter_convertWithIconv)
     version = NarrowWriter_preferDstring;
 
@@ -783,9 +851,9 @@ struct NarrowWriter(Sink)
                 char[BUFFER_SIZE.mchars] mbuf = void;
                 const(wchar)* psrc = inbuf.ptr;
 
-                const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
+                size_t mbLen = wcsnrtombs(mbuf.ptr, &psrc,
                         inbuf.length, mbuf.length, &context_.narrowen);
-                if (mbLen == -1)
+                if (mbLen == cast(size_t) -1)
                 {
                     errnoEnforce(errno == EILSEQ && replacement_,
                         "Cannot convert a Unicode character to multibyte "
@@ -806,6 +874,78 @@ struct NarrowWriter(Sink)
                 }
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
+        }
+        else version (NarrowWriterbufferedWcrtombForWstring)
+        {
+            // Convert UTF-16 to multibyte with buffering.
+            char[BUFFER_SIZE.mchars] mbuf = void;
+            size_t mbufUsed = 0;
+
+            for (const(wchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                if (mbufUsed >= mbuf.length - MB_CUR_MAX)
+                {
+                    sink_.put(mbuf[0 .. mbufUsed]);
+                    mbufUsed = 0;
+                }
+
+                // Need to deal with a possible surrogate pair...
+                size_t mbLen;
+
+                if ((inbuf[0] & 0xFC00) == 0xD800 && inbuf.length >= 2)
+                {
+                    wchar[3] wch = void;
+                    wch[0] = inbuf[0];
+                    wch[1] = inbuf[1];
+                    wch[2] = 0;
+
+                    version (HAVE_MBSTATE)
+                        mbLen = wcsrtombs(&mbuf[mbufUsed], wch.ptr,
+                                mbuf.length - mbufUsed, &context_.narrowen);
+                    else
+                        mbLen = wcstombs(&mbuf[mbufUsed], wch.ptr,
+                                mbuf.length - mbufUsed);
+                    inbuf = inbuf[2 .. $];
+                }
+                else
+                {
+                    version (HAVE_MBSTATE)
+                        mbLen = wcrtomb(&mbuf[mbufUsed], inbuf[0],
+                                &context_.narrowen);
+                    else
+                        mbLen = wctomb(&mbuf[mbufUsed], inbuf[0]);
+                    inbuf = inbuf[1 .. $];
+                }
+
+                if (mbLen == cast(size_t) -1)
+                {
+                    // Cannot convert inbuf[0] in the current locale.
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+
+                    // Write the successfully converted substring and the
+                    // replacement string.
+                    if (mbufUsed > 0)
+                        sink_.put(mbuf[0 .. mbufUsed]);
+                    if (replacement_.length > 0)
+                        sink_.put(replacement_);
+                    mbufUsed = 0;
+
+                    // The shift state is undefined; XXX reset.
+                    version (HAVE_MBSTATE)
+                        context_.narrowen = mbstate_t.init;
+                    else
+                        wctomb(null, 0);
+                }
+                else
+                {
+                    mbufUsed += mbLen;
+                }
+            }
+            // Flush the buffer.
+            if (mbufUsed > 0)
+                sink_.put(mbuf[0 .. mbufUsed]);
         }
         else
         {
@@ -835,9 +975,9 @@ struct NarrowWriter(Sink)
                 char[BUFFER_SIZE.mchars] mbuf = void;
                 const(dchar)* psrc = inbuf.ptr;
 
-                const mbLen = wcsnrtombs(mbuf.ptr, &psrc,
+                size_t mbLen = wcsnrtombs(mbuf.ptr, &psrc,
                         inbuf.length, mbuf.length, &context_.narrowen);
-                if (mbLen == -1)
+                if (mbLen == cast(size_t) -1)
                 {
                     errnoEnforce(errno == EILSEQ && replacement_,
                         "Cannot convert a Unicode character to multibyte "
@@ -859,6 +999,58 @@ struct NarrowWriter(Sink)
                 inbuf = inbuf[cast(size_t) (psrc - inbuf.ptr) .. $];
             }
         }
+        else version (NarrowWriterbufferedWcrtombForDstring)
+        {
+            // Convert UTF-32 to multibyte with buffering.
+            char[BUFFER_SIZE.mchars] mbuf = void;
+            size_t mbufUsed = 0;
+
+            for (const(dchar)[] inbuf = str; inbuf.length > 0; )
+            {
+                if (mbufUsed >= mbuf.length - MB_CUR_MAX)
+                {
+                    sink_.put(mbuf[0 .. mbufUsed]);
+                    mbufUsed = 0;
+                }
+
+                size_t mbLen;
+                version (HAVE_MBSTATE)
+                    mbLen = wcrtomb(&mbuf[mbufUsed], inbuf[0],
+                            &context_.narrowen);
+                else
+                    mbLen = wctomb(&mbuf[mbufUsed], inbuf[0]);
+                inbuf = inbuf[1 .. $];
+
+                if (mbLen == cast(size_t) -1)
+                {
+                    // Cannot convert inbuf[0] in the current locale.
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+
+                    // Write the successfully converted substring and the
+                    // replacement string.
+                    if (mbufUsed > 0)
+                        sink_.put(mbuf[0 .. mbufUsed]);
+                    if (replacement_.length > 0)
+                        sink_.put(replacement_);
+                    mbufUsed = 0;
+
+                    // The shift state is undefined; XXX reset.
+                    version (HAVE_MBSTATE)
+                        context_.narrowen = mbstate_t.init;
+                    else
+                        wctomb(null, 0);
+                }
+                else
+                {
+                    mbufUsed += mbLen;
+                }
+            }
+            // Flush the buffer.
+            if (mbufUsed > 0)
+                sink_.put(mbuf[0 .. mbufUsed]);
+        }
         else version (NarrowWriter_convertWithIconv)
         {
             // Convert UTF-32 to multibyte by chunk.
@@ -871,7 +1063,7 @@ struct NarrowWriter(Sink)
                 auto pbuf = cast(ubyte*) mbuf.ptr;
                 auto bufLeft = mbuf.length;
 
-                auto stat = iconv(context_.mbencode,
+                size_t stat = iconv(context_.mbencode,
                         &psrc, &srcLeft, &pbuf, &bufLeft);
                 auto iconverr = errno;
 
@@ -879,7 +1071,7 @@ struct NarrowWriter(Sink)
                 if (bufLeft < mbuf.length)
                     sink_.put(mbuf[0 .. $ -bufLeft]);
 
-                if (stat == -1)
+                if (stat == cast(size_t) -1)
                 {
                     // EILSEQ means that iconv couldn't convert the
                     // character at *psrc.  We can recover this error if
@@ -929,12 +1121,13 @@ struct NarrowWriter(Sink)
                             &context_.narrowen);
                 else
                     mbLen = wcstombs(mbuf.ptr, wbuf.ptr, mbuf.length);
-                errnoEnforce(mbLen != -1 || (errno == EILSEQ && replacement_),
-                    "Cannot convert a Unicode character to multibyte "
-                    ~"character sequence");
 
-                if (mbLen == -1)
+                if (mbLen == cast(size_t) -1)
                 {
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+
                     // Unicode ch is not representable in the current
                     // locale.  Output the replacement instead.
                     if (replacement_.length > 0)
@@ -961,12 +1154,13 @@ struct NarrowWriter(Sink)
                     mbLen = wcrtomb(mbuf.ptr, ch, &context_.narrowen);
                 else
                     mbLen = wctomb(mbuf.ptr, ch);
-                errnoEnforce(mbLen != -1 || (errno == EILSEQ && replacement_),
-                    "Cannot convert a Unicode character to multibyte "
-                    ~"character sequence");
 
-                if (mbLen == -1)
+                if (mbLen == cast(size_t) -1)
                 {
+                    errnoEnforce(errno == EILSEQ && replacement_,
+                        "Cannot convert a Unicode character to multibyte "
+                        ~"character sequence");
+
                     // Unicode ch is not representable in the current
                     // locale.  Output the replacement instead.
                     if (replacement_.length > 0)
@@ -1352,6 +1546,8 @@ private struct Widener(Sink)
                 const wcLen = mbsnrtowcs(wbuf.ptr, &psrc, inbuf.length,
                         wbuf.length, &widen_);
                 errnoEnforce(wcLen != -1);
+                    // No EILSEQ recovery here -- multibyte string should
+                    // be convertible to wide string.
 
                 // wcLen == 0 can happen if the multibyte string ends
                 // with an escape sequence.  In such case, the shift
@@ -1364,33 +1560,46 @@ private struct Widener(Sink)
         }
         else
         {
-            for (const(char)[] rest = mbs; rest.length > 0; )
+            // Convert multibyte to wide with buffering.
+            wchar_t[BUFFER_SIZE.wchars] wbuf = void;
+            size_t wbufUsed = 0;
+
+            for (const(char)[] inbuf = mbs; inbuf.length > 0; )
             {
-                wchar_t wc;
-                size_t stat;
-
-                version (HAVE_MBSTATE)
-                    stat = mbrtowc(&wc, rest.ptr, rest.length, &widen_);
-                else
-                    stat = mbtowc(&wc, rest.ptr, rest.length);
-                errnoEnforce(stat != cast(size_t) -1);
-
-                if (stat == cast(size_t) -2)
+                if (wbufUsed == wbuf.length)
                 {
-                    break; // consumed entire rest as a part of MB char
+                    sink_.put(wbuf[]);
+                    wbufUsed = 0;
+                }
+
+                size_t mbcLen;
+                version (HAVE_MBSTATE)
+                    mbcLen = mbrtowc(&wbuf[wbufUsed], inbuf.ptr, inbuf.length,
+                            &widen_);
+                else
+                    mbcLen = wctomb(&mbuf[wbufUsed], inbuf.ptr, inbuf.length);
+                enforce(mbcLen != cast(size_t) -1);
+                    // No EILSEQ recovery here -- multibyte string should
+                    // be convertible to wide string.
+
+                if (mbcLen == cast(size_t) -2)
+                {
+                    break; // consumed entire inbuf as a part of MB char
                            // sequence and the convertion state changed
                 }
-                else if (stat == 0)
+                else if (mbcLen == 0)
                 {
                     break; // XXX assuming the null character is the end
                 }
                 else
                 {
-                    assert(stat <= rest.length);
-                    rest = rest[stat .. $];
-                    sink_.put(wc);
+                    ++wbufUsed;
+                    inbuf = inbuf[mbcLen .. $];
                 }
             }
+            // Flush the buffer.
+            if (wbufUsed > 0)
+                sink_.put(wbuf[0 .. wbufUsed]);
         }
     }
 
