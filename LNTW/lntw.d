@@ -555,6 +555,19 @@ version (Posix) private
         void     freelocale(locale_t locobj);
         locale_t uselocale(locale_t newloc);
     }
+
+    version (HAVE_MULTILOCALE)
+    {
+        version (linux)
+        {
+            enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+        }
+        else version (OSX)
+        {
+            enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+        }
+        else static assert(0);
+    }
 }
 
 
@@ -740,7 +753,9 @@ struct NarrowWriter(Sink)
         // Save the current locale object.
         version (HAVE_MULTILOCALE)
         {
-            context_.locale = duplocale(uselocale(null));
+            auto curLoc = uselocale(null);
+            context_.locale = (curLoc == LC_GLOBAL_LOCALE ?
+                    LC_GLOBAL_LOCALE : duplocale(curLoc));
             errnoEnforce(context_.locale != null, "creating a cache "
                     ~"of the current locale object");
         }
@@ -781,7 +796,10 @@ struct NarrowWriter(Sink)
         if (context_ && --context_.refCount == 0)
         {
             version (HAVE_MULTILOCALE)
-                freelocale(context_.locale);
+            {
+                if (context_.locale != LC_GLOBAL_LOCALE)
+                    freelocale(context_.locale);
+            }
             version (NarrowWriter_convertWithIconv)
                 errnoEnforce(iconv_close(context_.mbencode) != -1);
         }
@@ -1481,7 +1499,9 @@ private struct Widener(Sink)
 
         version (HAVE_MULTILOCALE)
         {
-            locale_ = duplocale(uselocale(null));
+            auto curLoc = uselocale(null);
+            locale_ = (curLoc == LC_GLOBAL_LOCALE ?
+                    LC_GLOBAL_LOCALE : duplocale(curLoc));
             errnoEnforce(locale_ != null, "creating a cache of "
                     ~"the current locale object");
         }
@@ -1490,7 +1510,10 @@ private struct Widener(Sink)
     ~this()
     {
         version (HAVE_MULTILOCALE)
-            freelocale(locale_);
+        {
+            if (locale_ != LC_GLOBAL_LOCALE)
+                freelocale(locale_);
+        }
     }
 
 
