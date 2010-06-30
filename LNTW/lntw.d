@@ -7,7 +7,6 @@ import core.stdc.locale;
 void main()
 {
 //  setlocale(LC_CTYPE, "Japanese_Japan.932");
-//  setlocale(LC_CTYPE, "ja_JP.UTF-8");
 //  setlocale(LC_CTYPE, "ja_JP.eucJP");
 //  setlocale(LC_CTYPE, "el_GR.ISO8859-7");
     setlocale(LC_CTYPE, "");
@@ -15,24 +14,22 @@ void main()
 //  auto sink = File("a.txt", "w");
     auto sink = stdout;
 
-    fwide(sink.getFP(), -1);
+//  fwide(sink.getFP(), -1);
 //  fwide(sink.getFP(),  1);
 
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
         //auto w = File.LockingTextWriter(sink);
 
-        formattedWrite(w, "<< %s = %s%s%s >>\n", "λ", "α"w, '∧', "β"d);
+        formattedWrite(w, "<< %s = %s %s %s >>\n", "λ", "α"w, '∧', "β"d);
 
-        foreach (i; 0 .. 10)
+        foreach (i; 0 .. 8)
         {
-            w.put("ロッキング"c);
-            w.put(' ');
-            w.put("ねいてぃぶ"w);
-            w.put(' ');
-            w.put("text"d);
-            w.put(' ');
-            w.put("書込器");
+            w.put("מגדל בבל"c);
+            w.put('\t');
+            w.put("Tower of Babel"w);
+            w.put('\t');
+            w.put("バベルの塔"d);
             w.put('\n');
         }
     }
@@ -46,8 +43,6 @@ version (FreeBSD) debug = WITH_LIBICONV;
 ////////////////////////////////////////////////////////////////////////////////
 // LockingNativeTextWriter
 ////////////////////////////////////////////////////////////////////////////////
-
-// TODO: POSIX multilocale
 
 import core.stdc.wchar_ : fwide;
 
@@ -311,7 +306,6 @@ private struct UnsharedWidePutter
 version (Windows)
 {
     version = WCHART_WCHAR;
-//  version = HAVE_MBSTATE;     // DMD/Windows has no mbstate
 }
 else version (linux)
 {
@@ -333,13 +327,11 @@ else version (FreeBSD)
 {
     version = HAVE_MBSTATE;
     version = HAVE_RANGED_MBWC;
-//  version = HAVE_ICONV;       // Citrus
 }
 /+
 else version (NetBSD)
 {
     version = HAVE_MBSTATE;
-//  version = HAVE_RANGED_MBWC; // not yet
     version = HAVE_ICONV;
 }
 else version (Solaris)
