@@ -19,16 +19,9 @@ void main()
 
     {
         auto w = LockingNativeTextWriter(sink, "<?>");
-        //auto w = File.LockingTextWriter(sink);
+//      auto w = File.LockingTextWriter(sink);
 
         formattedWrite(w, "<< %s = %s %s %s >>\n", "λ", "α"w, '∧', "β"d);
-
-        version (HAVE_MULTILOCALE)
-        {
-            // LockingNativeTextWriter w is not affected by setlocale()
-            // nor uselocale() if POSIX multi-locale is supported.
-            setlocale(LC_CTYPE, "C");
-        }
 
         foreach (i; 0 .. 8)
         {
@@ -66,18 +59,16 @@ version (Windows) private
 
     version (DigitalMars)
     {
-        extern(C)
-        {
-            int isatty(int);
-            extern __gshared HANDLE[_NFILE] _osfhnd;
-        }
+        extern(C) extern __gshared HANDLE[_NFILE] _osfhnd;
 
-        int fileno(FILE* f) { return f._file; }
-        HANDLE osfhnd(FILE* f) { return _osfhnd[fileno(f)]; }
+        HANDLE osfhnd(FILE* f) @safe
+        {
+            return _osfhnd[f._file)];
+        }
     }
     else
     {
-        // fileno(), isatty(), osfhnd()
+        // osfhnd()
         static assert(0);
     }
 
@@ -310,7 +301,7 @@ else version (linux)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
+    version = HAVE_BOUNDED_MBWC;
     version = HAVE_ICONV;
     version = HAVE_MULTILOCALE;
 }
@@ -318,14 +309,14 @@ else version (OSX)
 {
     version = WCHART_DCHAR;
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
+    version = HAVE_BOUNDED_MBWC;
     version = HAVE_ICONV;
     version = HAVE_MULTILOCALE;
 }
 else version (FreeBSD)
 {
     version = HAVE_MBSTATE;
-    version = HAVE_RANGED_MBWC;
+    version = HAVE_BOUNDED_MBWC;
 }
 /+
 else version (NetBSD)
@@ -519,14 +510,14 @@ private extern(C) @system
     }
     +/
     else static assert(0);
+}
 
-    unittest
+unittest
+{
+    if (setlocale(LC_CTYPE, "en_US.UTF-8") != null)
     {
-        if (setlocale(LC_CTYPE, "en_US.UTF-8") != null)
-        {
-            scope(exit) setlocale(LC_CTYPE, "C");
-            assert(MB_CUR_MAX == 4 || MB_CUR_MAX == 6);
-        }
+        scope(exit) setlocale(LC_CTYPE, "C");
+        assert(MB_CUR_MAX == 4 || MB_CUR_MAX == 6);
     }
 }
 
@@ -796,10 +787,7 @@ struct NarrowWriter(Sink)
             version (NarrowWriter_convertWithC)
             {
                 version (HAVE_MULTILOCALE)
-                {
-                    if (context_.locale != LC_GLOBAL_LOCALE)
-                        freelocale(context_.locale);
-                }
+                    freelocale(context_.locale);
             }
             version (NarrowWriter_convertWithIconv)
                 errnoEnforce(iconv_close(context_.mbencode) != -1);
@@ -1514,10 +1502,7 @@ private struct Widener(Sink)
     ~this()
     {
         version (HAVE_MULTILOCALE)
-        {
-            if (locale_ != LC_GLOBAL_LOCALE)
-                freelocale(locale_);
-        }
+            freelocale(locale_);
     }
 
 
@@ -1533,7 +1518,7 @@ private struct Widener(Sink)
             scope(exit) uselocale(savedLoc);
         }
 
-        version (HAVE_RANGED_MBWC)
+        version (HAVE_BOUNDED_MBWC)
         {
             for (const(char)[] inbuf = mbs; inbuf.length > 0; )
             {
