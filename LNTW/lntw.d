@@ -23,6 +23,13 @@ void main()
 
         formattedWrite(w, "<< %s = %s %s %s >>\n", "λ", "α"w, '∧', "β"d);
 
+        version (HAVE_MULTILOCALE)
+        {
+            // LockingNativeTextWriter w is not affected by setlocale()
+            // nor uselocale() if POSIX multi-locale is supported.
+            setlocale(LC_CTYPE, "C");
+        }
+
         foreach (i; 0 .. 8)
         {
             w.put("מגדל בבל"c);
@@ -491,7 +498,7 @@ private extern(C) @system
     }
     else version (OSX)
     {
-        extern __gshared size_t __mb_cur_max;   // XXX ?
+        extern size_t __mb_cur_max();
         alias __mb_cur_max MB_CUR_MAX;
     }
     else version (FreeBSD)
@@ -545,10 +552,12 @@ version (Posix) private
         version (linux)
         {
             enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+            enum LC_CTYPE_MASK = 1 << LC_CTYPE;
         }
         else version (OSX)
         {
             enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+            enum LC_CTYPE_MASK = 1 << 1;
         }
         else static assert(0);
     }
@@ -734,19 +743,24 @@ struct NarrowWriter(Sink)
         }
         replacement_ = replacement;
 
-        // Save the current locale object.
-        version (HAVE_MULTILOCALE)
-        {
-            auto curLoc = uselocale(null);
-            context_.locale = (curLoc == LC_GLOBAL_LOCALE ?
-                    LC_GLOBAL_LOCALE : duplocale(curLoc));
-            errnoEnforce(context_.locale != null, "creating a cache "
-                    ~"of the current locale object");
-        }
-
         // Initialize the convertion state.
         version (NarrowWriter_convertWithC)
         {
+            // Take the snapshot of the current locale.
+            version (HAVE_MULTILOCALE)
+            {
+                auto curLoc = uselocale(null);
+                if (curLoc == LC_GLOBAL_LOCALE)
+                    // The global locale would be changed by someone,
+                    // so we must create a new copy.
+                    context_.locale = newlocale(LC_CTYPE_MASK,
+                            setlocale(LC_CTYPE, null), null);
+                else
+                    context_.locale = duplocale(curLoc);
+                errnoEnforce(context_.locale != null, "creating a cache "
+                        ~"of the current locale object");
+            }
+
             version (HAVE_MBSTATE)
                 context_.narrowen = mbstate_t.init;
             else
@@ -779,10 +793,13 @@ struct NarrowWriter(Sink)
     {
         if (context_ && --context_.refCount == 0)
         {
-            version (HAVE_MULTILOCALE)
+            version (NarrowWriter_convertWithC)
             {
-                if (context_.locale != LC_GLOBAL_LOCALE)
-                    freelocale(context_.locale);
+                version (HAVE_MULTILOCALE)
+                {
+                    if (context_.locale != LC_GLOBAL_LOCALE)
+                        freelocale(context_.locale);
+                }
             }
             version (NarrowWriter_convertWithIconv)
                 errnoEnforce(iconv_close(context_.mbencode) != -1);
@@ -1484,8 +1501,11 @@ private struct Widener(Sink)
         version (HAVE_MULTILOCALE)
         {
             auto curLoc = uselocale(null);
-            locale_ = (curLoc == LC_GLOBAL_LOCALE ?
-                    LC_GLOBAL_LOCALE : duplocale(curLoc));
+            if (curLoc == LC_GLOBAL_LOCALE)
+                locale_ = newlocale(
+                        LC_CTYPE_MASK, setlocale(LC_CTYPE, null), null);
+            else
+                locale_ = duplocale(curLoc);
             errnoEnforce(locale_ != null, "creating a cache of "
                     ~"the current locale object");
         }
