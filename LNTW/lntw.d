@@ -319,6 +319,7 @@ else version (linux)
     version = HAVE_MBSTATE;
     version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
+    version = HAVE_MULTILOCALE;
 }
 else version (OSX)
 {
@@ -326,6 +327,7 @@ else version (OSX)
     version = HAVE_MBSTATE;
     version = HAVE_RANGED_MBWC;
     version = HAVE_ICONV;
+    version = HAVE_MULTILOCALE;
 }
 else version (FreeBSD)
 {
@@ -539,6 +541,24 @@ private extern(C) @system
 
 
 //----------------------------------------------------------------------------//
+// POSIX.2008 multilocale
+//----------------------------------------------------------------------------//
+
+version (Posix) private
+{
+    alias void* locale_t;
+
+    extern(C) @system
+    {
+        locale_t newlocale(int category_mask, in char *locale, locale_t base);
+        locale_t duplocale(locale_t locobj);
+        void     freelocale(locale_t locobj);
+        locale_t uselocale(locale_t newloc);
+    }
+}
+
+
+//----------------------------------------------------------------------------//
 // druntime: core.sys.posix.langinfo
 //----------------------------------------------------------------------------//
 
@@ -577,28 +597,10 @@ version (Posix) private
     extern(C) @system
     {
         char* nl_langinfo(nl_item);
-//      char* nl_langinfo_l(nl_item, locale_t);
+        char* nl_langinfo_l(nl_item, locale_t);
     }
 }
 
-
-/+
-//----------------------------------------------------------------------------//
-version (Posix) private
-{
-    typedef void* locale_t;
-
-    extern(C) @system
-    {
-        locale_t newlocale(int category_mask, const char *locale, locale_t base);
-        locale_t duplocale(locale_t locobj);
-        void     freelocale(locale_t locobj);
-        locale_t uselocale(locale_t newloc);
-    }
-}
-// TODO
-
-+/
 
 //:::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::::://
 // NarrowWriter and WideWriter
@@ -753,6 +755,14 @@ struct NarrowWriter(Sink)
         }
         replacement_ = replacement;
 
+        // Save the current locale object.
+        version (HAVE_MULTILOCALE)
+        {
+            context_.locale = duplocale(uselocale(null));
+            errnoEnforce(context_.locale != null, "creating a cache "
+                    ~"of the current locale object");
+        }
+
         // Initialize the convertion state.
         version (NarrowWriter_convertWithC)
         {
@@ -788,6 +798,8 @@ struct NarrowWriter(Sink)
     {
         if (context_ && --context_.refCount == 0)
         {
+            version (HAVE_MULTILOCALE)
+                freelocale(context_.locale);
             version (NarrowWriter_convertWithIconv)
                 errnoEnforce(iconv_close(context_.mbencode) != -1);
         }
@@ -845,6 +857,12 @@ struct NarrowWriter(Sink)
         }
         else version (NarrowWriter_wcsnrtombsForWstring)
         {
+            version (HAVE_MULTILOCALE)
+            {
+                auto savedLoc = uselocale(context_.locale);
+                scope(exit) uselocale(savedLoc);
+            }
+
             // Convert UTF-16 to multibyte by chunk using wcsnrtombs().
             for (const(wchar)[] inbuf = str; inbuf.length > 0; )
             {
@@ -877,6 +895,12 @@ struct NarrowWriter(Sink)
         }
         else version (NarrowWriter_bufferedWcrtombForWstring)
         {
+            version (HAVE_MULTILOCALE)
+            {
+                auto savedLoc = uselocale(context_.locale);
+                scope(exit) uselocale(savedLoc);
+            }
+
             // Convert UTF-16 to multibyte with buffering.
             char[BUFFER_SIZE.mchars] mbuf = void;
             size_t mbufUsed = 0;
@@ -969,6 +993,12 @@ struct NarrowWriter(Sink)
         }
         else version (NarrowWriter_wcsnrtombsForDstring)
         {
+            version (HAVE_MULTILOCALE)
+            {
+                auto savedLoc = uselocale(context_.locale);
+                scope(exit) uselocale(savedLoc);
+            }
+
             // Convert UTF-32 to multibyte by chunk using wcsnrtombs().
             for (const(dchar)[] inbuf = str; inbuf.length > 0; )
             {
@@ -1001,6 +1031,12 @@ struct NarrowWriter(Sink)
         }
         else version (NarrowWriter_bufferedWcrtombForDstring)
         {
+            version (HAVE_MULTILOCALE)
+            {
+                auto savedLoc = uselocale(context_.locale);
+                scope(exit) uselocale(savedLoc);
+            }
+
             // Convert UTF-32 to multibyte with buffering.
             char[BUFFER_SIZE.mchars] mbuf = void;
             size_t mbufUsed = 0;
@@ -1107,6 +1143,12 @@ struct NarrowWriter(Sink)
     {
         version (NarrowWriter_convertWithC)
         {
+            version (HAVE_MULTILOCALE)
+            {
+                auto savedLoc = uselocale(context_.locale);
+                scope(exit) uselocale(savedLoc);
+            }
+
             static if (is(wchar_t == wchar))
             {
                 // dchar --> wchar[2] --> multibyte
@@ -1222,6 +1264,8 @@ private:
     {
         version (NarrowWriter_convertWithC)
         {
+            version (HAVE_MULTILOCALE)
+                locale_t  locale;   // for multi-thread safety
             version (HAVE_MBSTATE)
                 mbstate_t narrowen; // wide(Unicode) -> multibyte
         }
@@ -1522,11 +1566,25 @@ private struct Widener(Sink)
 
     this(Sink sink)
     {
+        swap(sink_, sink);
+
         version (HAVE_MBSTATE)
             widen_ = mbstate_t.init;
         else
             mbtowc(null, null, 0);
-        swap(sink_, sink);
+
+        version (HAVE_MULTILOCALE)
+        {
+            locale_ = duplocale(uselocale(null));
+            errnoEnforce(locale_ != null, "creating a cache of "
+                    ~"the current locale object");
+        }
+    }
+
+    ~this()
+    {
+        version (HAVE_MULTILOCALE)
+            freelocale(locale_);
     }
 
 
@@ -1536,6 +1594,12 @@ private struct Widener(Sink)
      */
     void put(in char[] mbs)
     {
+        version (HAVE_MULTILOCALE)
+        {
+            auto savedLoc = uselocale(locale_);
+            scope(exit) uselocale(savedLoc);
+        }
+
         version (HAVE_RANGED_MBWC)
         {
             for (const(char)[] inbuf = mbs; inbuf.length > 0; )
@@ -1607,6 +1671,8 @@ private:
     Sink sink_;
     version (HAVE_MBSTATE)
         mbstate_t widen_;
+    version (HAVE_MULTILOCALE)
+        locale_t  locale_;
 }
 
 
