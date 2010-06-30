@@ -150,14 +150,6 @@ struct LockingNativeTextWriter
         FUNLOCK(file_.p.handle);
     }
 
-    /+
-    // @@@BUG@@@ swap() invokes copy constructor
-    void opAssign(LockingNativeTextWriter rhs)
-    {
-        swap(this, rhs);
-    }
-    +/
-
 
     //----------------------------------------------------------------//
     // range primitive implementations
