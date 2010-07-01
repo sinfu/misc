@@ -300,7 +300,7 @@ shared static this()
             version (USE_MULTILOCALE)
                 freelocale(context_.locale);
             version (USE_ICONV)
-                iconv_close(context_.mbencode);
+                errnoEnforce(iconv_close(context_.mbencode) == 0);
         }
     }
 
