@@ -34,7 +34,7 @@ import std.utf;
 import utf;
 
 import core.stdc.errno;
-import core.stdc.locale;
+//import core.stdc.locale;
 import core.stdc.string;
 //import core.stdc.wchar_;
 
@@ -129,16 +129,17 @@ else
 {
     // XXX prefer which?
 
+    version (HAVE_ICONV)
+    {
+        // iconv UTF-32 --> native
+        version = USE_ICONV;
+        version = PREFER_DSTRING;
+    }
+    else
     version (WCHART_DCHAR) version (HAVE_MBSTATE) version (HAVE_MULTILOCALE)
     {
         // uselocale + mbstate_t + wcrtomb
         version = USE_MULTILOCALE;
-        version = PREFER_DSTRING;
-    }
-    else version (HAVE_ICONV)
-    {
-        // iconv UTF-32 --> native
-        version = USE_ICONV;
         version = PREFER_DSTRING;
     }
 }
@@ -684,10 +685,92 @@ private:
 //-/////////////////////////////////////////////////////////////////////////////
 private:
 
+// fix  core.stdc.locale
 // fix  core.stdc.wchar
 // add  core.sys.posix.iconv
 // add  core.sys.posix.locale
 // add  core.sys.posix.langinfo
+
+alias int c_int;
+
+
+//----------------------------------------------------------------------------//
+// fix - core.stdc.locale
+//----------------------------------------------------------------------------//
+
+import core.stdc.locale : lconv, localeconv, setlocale;
+
+version (Windows)
+{
+    enum
+    {
+        LC_ALL,
+        LC_COLLATE,
+        LC_CTYPE,
+        LC_MONETARY,
+        LC_NUMERIC,
+        LC_TIME,
+    }
+}
+else version (linux)
+{
+    enum
+    {
+        LC_CTYPE,
+        LC_NUMERIC,
+        LC_TIME,
+        LC_COLLATE,
+        LC_MONETARY,
+        LC_ALL,
+        LC_PAPER,
+        LC_NAME,
+        LC_ADDRESS,
+        LC_TELEPHONE,
+        LC_MEASUREMENT,
+        LC_IDENTIFICATION,
+    }
+}
+else version (OSX)
+{
+    enum
+    {
+        LC_ALL,
+        LC_COLLATE,
+        LC_CTYPE,
+        LC_MONETARY,
+        LC_NUMERIC,
+        LC_TIME,
+        LC_MESSAGES,
+    }
+}
+else version (FreeBSD)
+{
+    enum
+    {
+        LC_ALL,
+        LC_COLLATE,
+        LC_CTYPE,
+        LC_MONETARY,
+        LC_NUMERIC,
+        LC_TIME,
+        LC_MESSAGES,
+    }
+}
+else version (Solaris)
+{
+    enum
+    {
+        LC_CTYPE,
+        LC_NUMERIC,
+        LC_TIME,
+        LC_COLLATE,
+        LC_MONETARY,
+        LC_MESSAGES,
+        LC_ALL,
+    }
+}
+else static assert(0);
+
 
 //----------------------------------------------------------------------------//
 // fix - core.stdc.wchar
@@ -714,7 +797,7 @@ else version (linux)
 
     struct mbstate_t
     {
-        int     count;
+        c_int   count;
         wchar_t value = 0;  // XXX wint_t
     }
 
@@ -795,8 +878,8 @@ version (Posix)
     extern(C) @system
     {
         iconv_t iconv_open(in char*, in char*);
-        size_t iconv(iconv_t, in ubyte**, size_t*, ubyte**, size_t*);
-        int iconv_close(iconv_t);
+        size_t  iconv(iconv_t, in ubyte**, size_t*, ubyte**, size_t*);
+        c_int   iconv_close(iconv_t);
     }
 }
 
@@ -812,10 +895,44 @@ version (Posix)
     version (linux)
     {
         enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+
+        enum
+        {
+             LC_CTYPE_MASK           = 1 << LC_CTYPE,
+             LC_NUMERIC_MASK         = 1 << LC_NUMERIC,
+             LC_TIME_MASK            = 1 << LC_TIME,
+             LC_COLLATE_MASK         = 1 << LC_COLLATE,
+             LC_MONETARY_MASK        = 1 << LC_MONETARY,
+             LC_MESSAGES_MASK        = 1 << LC_MESSAGES,
+             LC_PAPER_MASK           = 1 << LC_PAPER,
+             LC_NAME_MASK            = 1 << LC_NAME,
+             LC_ADDRESS_MASK         = 1 << LC_ADDRESS,
+             LC_TELEPHONE_MASK       = 1 << LC_TELEPHONE,
+             LC_MEASUREMENT_MASK     = 1 << LC_MEASUREMENT,
+             LC_IDENTIFICATION_MASK  = 1 << LC_IDENTIFICATION,
+             LC_ALL_MASK             = LC_CTYPE_MASK | LC_NUMERIC_MASK |
+                 LC_TIME_MASK | LC_COLLATE_MASK | LC_MONETARY_MASK |
+                 LC_MESSAGES_MASK | LC_PAPER_MASK | LC_NAME_MASK |
+                 LC_ADDRESS_MASK | LC_TELEPHONE_MASK | LC_MEASUREMENT_MASK |
+                 LC_IDENTIFICATION_MASK,
+        }
     }
     else version (OSX)
     {
         enum LC_GLOBAL_LOCALE = cast(locale_t) -1;
+
+        enum
+        {
+            LC_COLLATE_MASK  = 1 << 0,
+            LC_CTYPE_MASK    = 1 << 1,
+            LC_MESSAGES_MASK = 1 << 2,
+            LC_MONETARY_MASK = 1 << 3,
+            LC_NUMERIC_MASK  = 1 << 4,
+            LC_TIME_MASK     = 1 << 5,
+            LC_ALL_MASK      = LC_COLLATE_MASK | LC_CTYPE_MASK |
+                LC_MESSAGES_MASK | LC_MONETARY_MASK | LC_NUMERIC_MASK |
+                LC_TIME_MASK,
+        }
     }
 
     extern(C) @system
@@ -832,15 +949,14 @@ version (Posix)
 // missing - core.sys.posix.langinfo
 //----------------------------------------------------------------------------//
 
-alias int c_int;
-
 version (Posix)
 {
     version (linux)
     {
         alias c_int nl_item;
 
-        private @safe nl_item _NL_ITEM(int category, int index)
+        private @safe pure nothrow
+            nl_item _NL_ITEM(int category, int index)
         {
             return (category << 16) | index;
         }
