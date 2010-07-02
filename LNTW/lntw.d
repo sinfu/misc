@@ -12,7 +12,7 @@ import core.stdc.locale;
 void main()
 {
     {
-        fwide(std.stdio.stdout.getFP(), 1);     // wide mode
+//      fwide(std.stdio.stdout.getFP(), 1);     // wide mode
 
         auto r = cast(immutable ubyte[]) "?";
         auto w = LockingNativeTextWriter(std.stdio.stdout, r);
@@ -280,7 +280,6 @@ private @system struct _UnsharedWidePutter
 
     void put(const wchar_t[] wcs)
     {
-        std.stdio.stdout.writefln("u+%(06x u+)", wcs);
         foreach (wchar_t wc; wcs)
             FPUTWC(wc, handle_);
         if (ferror(cast(shared) handle_))
