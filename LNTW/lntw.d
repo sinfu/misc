@@ -96,7 +96,7 @@ version (Windows) private
      * NOTES:
      * If writing to a wide-oriented $(D File), make sure that the
      * LC_CTYPE locale used by the $(D fputwc) function is set to the
-     * environment native one: $(D "").  Or, you'll get an $(D
+     * environment native one: $(D "").  Or, you may get an $(D
      * StdioException) with the error code $(D EILSEQ).
      *
      * Such a restriction does not exist in byte-oriented, or usual,
@@ -955,6 +955,58 @@ private:
     }
 }
 
+unittest
+{
+    version (Posix) if (.nativeEncodingz == "eucJP\0" ||
+                        .nativeEncodingz == "EUC-JP\0")
+    {
+        ubyte[] mbs;
+        auto r = appender(&mbs);
+        auto w = NativeTextEncoder!(typeof(r))(r);
+        w.put("1 \u6d88\u3048\u305f 2"c);
+        w.put("3 \u624b\u888b\u306e 4"w);
+        w.put("5 \u3086\u304f\u3048 6"d);
+        w.put(""c);
+        w.put('\u2026');
+        w.put('/');
+        assert(cast(string) mbs ==
+                "\x31\x20\xbe\xc3\xa4\xa8\xa4\xbf\x20\x32"
+                ~"\x33\x20\xbc\xea\xc2\xde\xa4\xce\x20\x34"
+                ~"\x35\x20\xa4\xe6\xa4\xaf\xa4\xa8\x20\x36"
+                ~"\xa1\xc4\x2f");
+        // replacement
+        r.clear();
+        w = NativeTextEncoder!(typeof(r))(r, cast(immutable ubyte[]) "#");
+        w.put("123 \u05de\u05d2\u05d3\u05dc\U00026951 abc"c);
+        assert(cast(string) mbs == "123 ##### abc");
+        //
+        w = NativeTextEncoder!(typeof(r))(r);
+        try
+        {
+            w.put("\U00026951"c);
+            assert(0);
+        }
+        catch (EncodingException ee) {}
+    }
+    version (Windows) if (.nativeACP == 932)
+    {
+        ubyte[] mbs;
+        auto r = appender(&mbs);
+        auto w = NativeTextEncoder!(typeof(r))(r);
+        w.put("1 \u6d88\u3048\u305f 2"c);
+        w.put("3 \u624b\u888b\u306e 4"w);
+        w.put("5 \u3086\u304f\u3048 6"d);
+        w.put(""c);
+        w.put('\u2026');
+        w.put('/');
+        assert(cast(string) mbs ==
+                "\x31\x20\x8f\xc1\x82\xa6\x82\xbd\x20\x32"
+                ~"\x33\x20\x8e\xe8\x91\xdc\x82\xcc\x20\x34"
+                ~"\x35\x20\x82\xe4\x82\xad\x82\xa6\x20\x36"
+                ~"\x81\x63\x2f");
+    }
+}
+
 
 //----------------------------------------------------------------------------//
 // WideTextEncoder
@@ -1185,7 +1237,44 @@ private:
     {
         NativeTextEncoder!(_NativeTextWidener!(Sink)) proxy_;
     }
- }
+}
+
+unittest
+{
+    version (Posix) if (.nativeEncodingz ==     "eucJP\0" ||
+                        .nativeEncodingz ==    "EUC-JP\0" ||
+                        .nativeEncodingz ==      "SJIS\0" ||
+                        .nativeEncodingz == "Shift_JIS\0" ||
+                        .nativeEncodingz ==     "UTF-8\0")
+    {
+        wchar_t[] wcs;
+        auto r = appender(&wcs);
+        try
+        {
+            auto w = _WideTextEncoder!(typeof(r))(r);
+            w.put("\u3054\u306f\u3093\u304b"c);
+            w.put("\u3051\u305f"w);
+            w.put("\u307e"d);
+            w.put('\u3054');
+            assert(wcs.length == 8);
+        }
+        catch (Exception e)
+        {
+            assert(0, e.toString());
+        }
+    }
+    version (Windows) if (.nativeACP == 932)
+    {
+        wchar_t[] wcs;
+        auto r = appender(&wcs);
+        auto w = _WideTextEncoder!(typeof(r))(r);
+        w.put("\u3054\u306f\u3093\u304b"c);
+        w.put("\u3051\u305f"w);
+        w.put("\u307e"d);
+        w.put('\u3054');
+        assert(wcs == "\u3054\u306f\u3093\u304b\u3051\u305f\u307e\u3054"w);
+    }
+}
 
 
 //----------------------------------------------------------------------------//
