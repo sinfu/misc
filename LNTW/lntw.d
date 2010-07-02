@@ -7,22 +7,17 @@ module lntw;
 import std.format;
 import std.stdio;
 
-import core.stdc.locale;
 
 void main()
 {
-    {
-//      fwide(std.stdio.stdout.getFP(), 1);     // wide mode
+//  fwide(std.stdio.stdout.getFP(), 1);     // wide mode
 
-        auto r = cast(immutable ubyte[]) "?";
-        auto w = LockingNativeTextWriter(std.stdio.stdout, r);
-        w.put("מגדל בבל"c);
-        w.put('\n');
-        w.put("Tower of Babel"w);
-        w.put('\n');
-        w.put("バベルの塔"d);
-        w.put('\n');
-    }
+    auto r = cast(immutable ubyte[]) "?";
+    auto w = LockingNativeTextWriter(std.stdio.stdout, r);
+    formattedWrite(w, "%s\n%s\n%s\n",
+            "מגדל בבל"c,
+            "Tower of Babel"w,
+            "バベルの塔"d);
 }
 
 
