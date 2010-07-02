@@ -2138,6 +2138,7 @@ else version (linux)
         LC_TIME,
         LC_COLLATE,
         LC_MONETARY,
+        LC_MESSAGES,
         LC_ALL,
         LC_PAPER,
         LC_NAME,
