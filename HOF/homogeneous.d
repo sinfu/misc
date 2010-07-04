@@ -6,15 +6,19 @@
  */
 module homogeneous;
 
+void main()
+{
+    demo();
+}
+
+
 //----------------------------------------------------------------------------//
 // Demo
 //----------------------------------------------------------------------------//
 
-import std.array;
 import std.stdio;
-import std.range;
 
-void main()
+void demo()
 {
     Homogeneous!(FileStream, MemoryStream) sink;
 
@@ -39,7 +43,11 @@ void main()
     {
         auto cpsink = sink;
         cpsink.write("Hello from the copy of the sink.\n");
+        sink = cpsink;
     }
+
+    // The sink is still alive.
+    sink.write("Good bye.\n");
 }
 
 // Demo
@@ -53,18 +61,18 @@ struct MemoryStream
     {
         buffer = new char[size];
         rc     = new int;
-        writeln(++*rc, " # MemoryStream this()");
+        writeln("\t", ++*rc, " # MemoryStream this()");
     }
 
     this(this)
     {
-        writeln(++*rc, " > MemoryStream this(this)");
+        writeln("\t", ++*rc, " > MemoryStream this(this)");
     }
 
     ~this()
     {
         if (rc)
-            writeln(--*rc, " < MemoryStream this(this)");
+            writeln("\t", --*rc, " < MemoryStream ~this()");
     }
 
     void write(in char[] data)
@@ -89,18 +97,18 @@ struct FileStream
     {
         file = f;
         rc   = new int;
-        writeln(++*rc, " # FileStream this()");
+        writeln("\t", ++*rc, " # FileStream this()");
     }
 
     this(this)
     {
-        writeln(++*rc, " > FileStream this(this)");
+        writeln("\t", ++*rc, " > FileStream this(this)");
     }
 
     ~this()
     {
         if (rc)
-            writeln(--*rc, " < FileStream this(this)");
+            writeln("\t", --*rc, " < FileStream ~this()");
     }
 
     void write(in char[] data)
@@ -114,7 +122,10 @@ struct FileStream
 // Homogeneous
 ////////////////////////////////////////////////////////////////////////////////
 
-import std.algorithm : swap;
+import std.algorithm;   // swap
+import std.array;       // empty, front, popFront
+
+version (unittest) import std.typetuple : TypeTuple;
 
 
 /**
@@ -137,7 +148,7 @@ writer.write("This is written to the memory.");
 assert(writer.instance!MemoryWriter.data == "This is written to the memory.");
 --------------------
  */
-struct Homogeneous(Ducks...)
+@safe struct Homogeneous(Ducks...)
 {
     /**
      * Invokes the method $(D op) on the active object.
@@ -186,7 +197,7 @@ struct Homogeneous(Ducks...)
     }
 
     // @@@BUG4424@@@ workaround
-    void opAssign(T)(T rhs) if (is(T == typeof(this)))
+    @trusted void opAssign(T)(T rhs) if (is(T == typeof(this)))
         { swap(this, rhs); }
     private template _workaround4424()
         { @disable void opAssign(...) { assert(0); } }
@@ -234,7 +245,7 @@ struct Homogeneous(Ducks...)
 Homogeneous!(A, B) ab;
 
 assert(ab.Homogeneous.empty);
-assert(ab.Homogeneous.canStore!A);
+assert(ab.Homogeneous.allows!A);
 
 ab = A();
 assert(ab.Homogeneous.isActive!A);
@@ -255,9 +266,9 @@ A a = ab.Homogeneous.instance!A;
          * Returns $(D true) if type $(D T) is listed in the homogeneous
          * type list $(D Types).
          */
-        template canStore(T) // FIXME the name
+        template allows(T) // FIXME the name
         {
-            enum bool canStore = _canStore!T;
+            enum bool allows = _homogenizes!T;
         }
 
 
@@ -291,7 +302,7 @@ A a = ab.Homogeneous.instance!A;
          * )
          */
         @trusted @property ref T instance(T)() nothrow
-            if (canStore!(T))
+            if (allows!(T))
         in
         {
             assert(which_ == duckID!T);
@@ -368,17 +379,17 @@ private:
      * Returns $(D true) if the type $(D T) is in the set of homogeneous
      * types $(D Ducks).
      */
-    template _canStore(T)
+    template _homogenizes(T)
     {
-        enum bool _canStore = (duckID!T != size_t.max);
+        enum bool _homogenizes = (duckID!T != size_t.max);
     }
 
     unittest
     {
         foreach (Duck; Ducks)
-            assert(_canStore!(Duck));
+            assert(_homogenizes!(Duck));
         struct Unknown {}
-        assert(!_canStore!(Unknown));
+        assert(!_homogenizes!(Unknown));
     }
 
 
@@ -405,14 +416,14 @@ private:
     /*
      * Set $(D rhs) in the storage.
      */
-    void grab(T)(ref T rhs)
+    @trusted void grab(T)(ref T rhs)
     in
     {
         assert(which_ == size_t.max);
     }
     body
     {
-        static if (_canStore!(T))
+        static if (_homogenizes!(T))
         {
             // Simple blit.
             _init(storageAs!T);
@@ -470,7 +481,7 @@ private:
      * type $(D T).  This does not validate the type.
      */
     @system ref T storageAs(T)() nothrow
-        if (_canStore!(T))
+        if (_homogenizes!(T))
     {
         foreach (Duck; Ducks)
         {
@@ -539,6 +550,28 @@ private:
 
 
     //----------------------------------------------------------------//
+
+    // @@@BUG@@@ workaround
+    static if (_canDispatch!("front") && _canDispatch!("empty") &&
+            _canDispatch!("popFront"))
+    public @system
+    {
+        @property bool empty()
+        {
+            return opDispatch!("empty")();
+        }
+        @property auto ref front()
+        {
+            return opDispatch!("front")();
+        }
+        void popFront()
+        {
+            opDispatch!("popFront")();
+        }
+    }
+
+
+    //----------------------------------------------------------------//
 private:
     size_t which_ = size_t.max;     // ID of the 'active' Duck
     union
@@ -551,14 +584,128 @@ private:
 
 unittest
 {
+    // copy constructor & destructor
+    struct Counter
+    {
+        int* copies;
+        this(this) { copies && ++*copies; }
+        ~this()    { copies && --*copies; }
+    }
+    Homogeneous!(Counter) a;
+    a = Counter(new int);
+    assert(*a.copies == 0);
+    {
+        auto b = a;
+        assert(*a.copies == 1);
+        {
+            auto c = a;
+            assert(*a.copies == 2);
+        }
+        assert(*a.copies == 1);
+    }
+    assert(*a.copies == 0);
+}
+
+unittest
+{
+    // basic use
+    int afoo, bfoo;
+    struct A {
+        int inc() { return ++afoo; }
+        int dec() { return --afoo; }
+    }
+    struct B {
+        int inc() { return --bfoo; }
+        int dec() { return ++bfoo; }
+    }
+    Homogeneous!(A, B) ab;
+    ab = A();
+    assert(ab.inc() == 1 && afoo == 1);
+    assert(ab.dec() == 0 && afoo == 0);
+    ab = B();
+    assert(ab.inc() == -1 && bfoo == -1);
+    assert(ab.dec() ==  0 && bfoo ==  0);
+}
+
+unittest
+{
+    // ref argument & ref return
+    struct K {
+        ref int foo(ref int a, ref int b) { ++b; return a; }
+    }
+    Homogeneous!(K) k;
+    int v, w;
+    k = K();
+    assert(&(k.foo(v, w)) == &v);
+    assert(w == 1);
+}
+
+unittest
+{
+    // meta interface
+    Homogeneous!(int, real) a;
+
+    assert(is(a.Homogeneous.Types == TypeTuple!(int, real)));
+    assert(a.Homogeneous.allows!int);
+    assert(a.Homogeneous.allows!real);
+    assert(!a.Homogeneous.allows!string);
+
+    assert(a.Homogeneous.empty);
+
+    a = 42;
+    assert(!a.Homogeneous.empty);
+    assert( a.Homogeneous.isActive!int);
+    assert(!a.Homogeneous.isActive!real);
+    assert(!a.Homogeneous.isActive!string);
+    int* i = &(a.Homogeneous.instance!int());
+    assert(*i == 42);
+
+    a = -21.0L;
+    assert(!a.Homogeneous.empty);
+    assert(!a.Homogeneous.isActive!int);
+    assert( a.Homogeneous.isActive!real);
+    assert(!a.Homogeneous.isActive!string);
+    real* r = &(a.Homogeneous.instance!real());
+    assert(*r == -21.0L);
+}
+
+unittest
+{
+    Homogeneous!(string, wstring) str;
+
+    str = cast(string) "a";
+    assert(str.length == 1);
+    assert(str.front == 'a');
+    str.popFront;
+    assert(str.empty);
+
+    str = cast(wstring) "bc";
+    assert(str.length == 2);
+    str.popFront;
+    assert(str.front == 'c');
+    assert(!str.empty);
+
+    size_t i;
+    str = "\u3067\u3043\u30fc";
+    foreach (e; str)
+        assert(e == "\u3067\u3043\u30fc"d[i++]);
 }
 
 
+//----------------------------------------------------------------------------//
+
 private @trusted void _init(T)(ref T obj)
 {
-    auto buf  = (cast(void*) &obj   )[0 .. T.sizeof];
-    auto init = (cast(void*) &T.init)[0 .. T.sizeof];
-    buf[] = init[];
+    static if (is(T == struct))
+    {
+        auto buf  = (cast(void*) &obj   )[0 .. T.sizeof];
+        auto init = (cast(void*) &T.init)[0 .. T.sizeof];
+        buf[] = init[];
+    }
+    else
+    {
+        obj = T.init;
+    }
 }
 
 private template _maxSize(size_t max, TT...)
