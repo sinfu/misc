@@ -172,7 +172,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck()."
+                return mixin("_storageAs!Duck()."
                         ~ (args.length == 0 ? op : op ~ "(args)"));
             }));
         assert(0);
@@ -187,9 +187,9 @@ struct Homogeneous(Ducks...)
         if (_canAssign!(T))
     {
         if (which_ == size_t.max)
-            grab(rhs);
+            _grab(rhs);
         else
-            assign(rhs);
+            _assign(rhs);
     }
 
     // @@@BUG4424@@@ workaround
@@ -212,7 +212,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin(op ~ "storageAs!Duck");
+                return mixin(op ~ "_storageAs!Duck");
             }));
         assert(0);
     }
@@ -226,7 +226,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin(op ~ "storageAs!Duck[" ~
+                return mixin(op ~ "_storageAs!Duck[" ~
                         _commaExpand!("indices", Indices.length) ~ "]");
             }));
         assert(0);
@@ -240,7 +240,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin(op ~ "storageAs!Duck[i .. j]");
+                return mixin(op ~ "_storageAs!Duck[i .. j]");
             }));
         assert(0);
     }
@@ -253,7 +253,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin(op ~ "storageAs!Duck[]");
+                return mixin(op ~ "_storageAs!Duck[]");
             }));
         assert(0);
     }
@@ -267,9 +267,9 @@ struct Homogeneous(Ducks...)
         mixin (_onActiveDuck!(
             q{
                 static if (is(T == Duck))
-                    return         storageAs!Duck;
+                    return         _storageAs!Duck;
                 else
-                    return cast(T) storageAs!Duck;
+                    return cast(T) _storageAs!Duck;
             }));
         assert(0);
     }
@@ -282,7 +282,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck() " ~ op ~ " rhs");
+                return mixin("_storageAs!Duck() " ~ op ~ " rhs");
             }));
         assert(0);
     }
@@ -295,7 +295,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return mixin("lhs " ~ op ~ "storageAs!Duck");
+                return mixin("lhs " ~ op ~ "_storageAs!Duck");
             }));
         assert(0);
     }
@@ -308,7 +308,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return storageAs_const!Duck() == rhs;
+                return _storageAs_const!Duck() == rhs;
             }));
         assert(0);
     }
@@ -319,7 +319,8 @@ struct Homogeneous(Ducks...)
         {
             mixin (_onActiveDuck!(
                 q{
-                    return storageAs_const!Duck() == rhs.storageAs_const!Duck;
+                    return _storageAs_const!Duck() ==
+                            rhs._storageAs_const!Duck;
                 }));
             assert(0);
         }
@@ -337,8 +338,8 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return (storageAs_const!Duck < rhs) ? -1 :
-                       (storageAs_const!Duck > rhs) ?  1 : 0;
+                return (_storageAs_const!Duck < rhs) ? -1 :
+                       (_storageAs_const!Duck > rhs) ?  1 : 0;
             }));
         assert(0);
     }
@@ -351,7 +352,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return -rhs.opCmp(storageAs_const!Duck);
+                return -rhs.opCmp(_storageAs_const!Duck);
             }));
         assert(0);
     }
@@ -364,7 +365,7 @@ struct Homogeneous(Ducks...)
 
         mixin (_onActiveDuck!(
             q{
-                return storageAs!Duck()(args);
+                return _storageAs!Duck()(args);
             }));
         assert(0);
     }
@@ -373,7 +374,7 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck() " ~ op ~ "= rhs");
+                return mixin("_storageAs!Duck() " ~ op ~ "= rhs");
             }));
         assert(0);
     }
@@ -383,7 +384,7 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck[" ~
+                return mixin("_storageAs!Duck[" ~
                         _commaExpand!("indices", Indices.length) ~
                     "] " ~ op ~ "= rhs");
             }));
@@ -394,16 +395,16 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck[i .. j] " ~ op ~ "= rhs");
+                return mixin("_storageAs!Duck[i .. j] " ~ op ~ "= rhs");
             }));
         assert(0);
     }
 
-    @system auto ref opSliceOpAssign(string op)(RHS rhs)
+    @system auto ref opSliceOpAssign(string op, RHS)(RHS rhs)
     {
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck[] " ~ op ~ "= rhs");
+                return mixin("_storageAs!Duck[] " ~ op ~ "= rhs");
             }));
         assert(0);
     }
@@ -412,7 +413,7 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return mixin("storageAs!Duck[" ~
+                return mixin("_storageAs!Duck[" ~
                     _commaExpand!("indices", Indices.length) ~ "]");
             }));
         assert(0);
@@ -422,7 +423,7 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return storageAs!Duck[i .. j];
+                return _storageAs!Duck[i .. j];
             }));
         assert(0);
     }
@@ -431,7 +432,7 @@ struct Homogeneous(Ducks...)
     {
         mixin (_onActiveDuck!(
             q{
-                return storageAs!Duck[];
+                return _storageAs!Duck[];
             }));
         assert(0);
     }
@@ -447,7 +448,7 @@ struct Homogeneous(Ducks...)
     @system this(this)
     {
         if (which_ != size_t.max)
-            postblit();
+            _postblit();
     }
 
 
@@ -457,7 +458,7 @@ struct Homogeneous(Ducks...)
     @system ~this()
     {
         if (which_ != size_t.max)
-            dispose();
+            _dispose();
     }
 
 
@@ -513,7 +514,7 @@ A a = ab.Homogeneous.instance!A;
          */
         @safe bool isActive(T)() const nothrow
         {
-            return which_ != size_t.max && which_ == duckID!T;
+            return which_ != size_t.max && which_ == _duckID!T;
         }
 
 
@@ -531,11 +532,11 @@ A a = ab.Homogeneous.instance!A;
             if (allows!(T))
         in
         {
-            assert(which_ == duckID!T);
+            assert(which_ == _duckID!T);
         }
         body
         {
-            return storageAs!T;
+            return _storageAs!T;
         }
         /+ // @@@BUG3748@@@
         @trusted @property ref inout(T) instance(T)() inout nothrow
@@ -607,7 +608,7 @@ private:
      */
     template _homogenizes(T)
     {
-        enum bool _homogenizes = (duckID!T != size_t.max);
+        enum bool _homogenizes = (_duckID!T != size_t.max);
     }
 
     unittest
@@ -623,18 +624,18 @@ private:
      * Returns the ID of the duck of type $(D T), or $(D size_t.max) if
      * $(D T) is not in the set of homogeneous types.
      */
-    template duckID(T, size_t id = 0)
+    template _duckID(T, size_t id = 0)
     {
         static if (id < Ducks.length)
         {
             static if (is(T == Ducks[id]))
-                enum size_t duckID = id;
+                enum size_t _duckID = id;
             else
-                enum size_t duckID = duckID!(T, id + 1);
+                enum size_t _duckID = _duckID!(T, id + 1);
         }
         else
         {
-            enum size_t duckID = size_t.max;
+            enum size_t _duckID = size_t.max;
         }
     }
 
@@ -649,7 +650,7 @@ private:
             "L_chooseActive:" ~
                 "final switch (which_) {" ~
                     "foreach (Duck; Ducks) {" ~
-                        "case duckID!Duck:" ~
+                        "case _duckID!Duck:" ~
                             stmt ~
                             "break L_chooseActive;" ~
                     "}" ~
@@ -660,7 +661,7 @@ private:
     /*
      * Set $(D rhs) in the storage.
      */
-    @trusted void grab(T)(ref T rhs)
+    @trusted void _grab(T)(ref T rhs)
     in
     {
         assert(which_ == size_t.max);
@@ -670,20 +671,20 @@ private:
         static if (_homogenizes!(T))
         {
             // Simple blit.
-            _init(storageAs!T);
-            swap(storageAs!T, rhs);
-            which_ = duckID!T;
+            _init(_storageAs!T);
+            swap(_storageAs!T, rhs);
+            which_ = _duckID!T;
         }
         else
         {
             // Use the first-matching opAssign.
             foreach (Duck; Ducks)
             {
-                static if (__traits(compiles, storageAs!Duck() = rhs))
+                static if (__traits(compiles, _storageAs!Duck() = rhs))
                 {
-                    _init(storageAs!Duck);
-                    storageAs!Duck() = rhs;
-                    which_ = duckID!Duck;
+                    _init(_storageAs!Duck);
+                    _storageAs!Duck() = rhs;
+                    which_ = _duckID!Duck;
                     break;
                 }
             }
@@ -694,7 +695,7 @@ private:
     /*
      * Assigns $(D rhs) to the existing active object.
      */
-    @trusted void assign(T)(ref T rhs)
+    @trusted void _assign(T)(ref T rhs)
     in
     {
         assert(which_ != size_t.max);
@@ -703,13 +704,13 @@ private:
     {
         mixin (_onActiveDuck!(
             q{
-                static if (__traits(compiles, storageAs!Duck() = rhs))
-                    return storageAs!Duck() = rhs;
+                static if (__traits(compiles, _storageAs!Duck() = rhs))
+                    return _storageAs!Duck() = rhs;
             }));
 
         // Or, alter the content with rhs.
-        dispose();
-        grab(rhs);
+        _dispose();
+        _grab(rhs);
     }
 
 
@@ -717,12 +718,12 @@ private:
      * Returns a reference to the holded object as an instance of
      * type $(D T).  This does not validate the type.
      */
-    @system ref T storageAs(T)() nothrow
+    @system ref T _storageAs(T)() nothrow
         if (_homogenizes!(T))
     {
         foreach (Duck; Ducks)
         {
-            static if (duckID!T == duckID!Duck)
+            static if (_duckID!T == _duckID!Duck)
                 return *cast(Duck*) storage_.ptr;
         }
         assert(0);
@@ -730,12 +731,13 @@ private:
     /+ // @@@BUG3748@@@
     @system ref inout(T) storageAs(T)() inout nothrow
     +/
-    @system ref const(T) storageAs_const(T)() const nothrow
+
+    @system ref const(T) _storageAs_const(T)() const nothrow
         if (_homogenizes!(T))
     {
         foreach (Duck; Ducks)
         {
-            static if (duckID!T == duckID!Duck)
+            static if (_duckID!T == _duckID!Duck)
                 return *cast(const Duck*) storage_.ptr;
         }
         assert(0);
@@ -746,7 +748,7 @@ private:
     /*
      * Runs the copy constructor on the active object.
      */
-    @trusted void postblit()
+    @trusted void _postblit()
     in
     {
         assert(which_ != size_t.max);
@@ -755,8 +757,8 @@ private:
     {
         mixin (_onActiveDuck!(
             q{
-                static if (__traits(compiles, storageAs!Duck().__postblit()))
-                    storageAs!Duck().__postblit();
+                static if (__traits(compiles, _storageAs!Duck().__postblit()))
+                    _storageAs!Duck().__postblit();
                 return;
             }));
         assert(0);
@@ -767,7 +769,7 @@ private:
      * Destroys the active object (if it's a struct) and markes this
      * $(D Homogeneous) object empty.
      */
-    @trusted void dispose()
+    @trusted void _dispose()
     in
     {
         assert(which_ != size_t.max);
@@ -780,8 +782,8 @@ private:
     {
         mixin (_onActiveDuck!(
             q{
-                static if (__traits(compiles, storageAs!Duck.__dtor()))
-                    storageAs!Duck.__dtor();
+                static if (__traits(compiles, _storageAs!Duck.__dtor()))
+                    _storageAs!Duck.__dtor();
                 which_ = size_t.max;
                 return;
             }));
@@ -1007,8 +1009,11 @@ unittest
     // opSliceUnary
     struct Tag { string op; int x; real y; }
     struct OpEcho {
-        Tag opSliceUnary(string op)(int x, real y) {
+        Tag opSliceUnary(string op, int k = 2)(int x, real y) {
             return Tag(op, x, y);
+        }
+        Tag opSliceUnary(string op, int k = 0)() {
+            return Tag(op, -1, -1);
         }
     }
     Homogeneous!(OpEcho) obj;
@@ -1018,6 +1023,9 @@ unittest
     {
         auto r = mixin(op ~ "obj[4 .. 5.5]");
         assert(eq( r, Tag(op, 4, 5.5) ));
+
+        auto s = mixin(op ~ "obj[]");
+        assert(eq( s, Tag(op, -1, -1) ));
     }
 }
 
@@ -1196,8 +1204,11 @@ unittest
     // opSliceOpAssign
     struct Tag { string op; int v; int i; real j; }
     struct OpEcho {
-        Tag opSliceOpAssign(string op)(int v, int i, real j) {
+        Tag opSliceOpAssign(string op, int k = 2)(int v, int i, real j) {
             return Tag(op, v, i, j);
+        }
+        Tag opSliceOpAssign(string op, int k = 0)(int v) {
+            return Tag(op, v, -1, -1);
         }
     }
     Homogeneous!(OpEcho) obj;
@@ -1208,6 +1219,9 @@ unittest
     {
         auto r = mixin("obj[4 .. 7.5] " ~ op ~ "= 42");
         assert(eq( r, Tag(op, 42, 4, 7.5) ));
+
+        auto s = mixin("obj[] " ~ op ~ "= 42");
+        assert(eq( r, Tag(op, 42, -1, -1) ));
     }
 }
 
@@ -1235,12 +1249,18 @@ unittest
         Tag opSlice(int i, real j) {
             return Tag(i, j);
         }
+        Tag opSlice() {
+            return Tag(-1, -1);
+        }
     }
     Homogeneous!(OpEcho) obj;
 
     obj = OpEcho();
     auto r = obj[4 .. 9.5];
     assert(eq( r, Tag(4, 9.5) ));
+
+    auto s = obj[];
+    assert(eq( s, Tag(-1, -1) ));
 }
 
 
