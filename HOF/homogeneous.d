@@ -124,6 +124,7 @@ struct FileStream
 
 import std.algorithm;   // swap
 import std.array;       // empty, front, popFront
+import std.conv;
 
 version (unittest) import std.typetuple : TypeTuple;
 
@@ -162,14 +163,12 @@ struct Homogeneous(Ducks...)
      *   $(LI $(D Error) if this $(D Homogeneous) object is empty)
      * )
      */
-    @system auto ref opDispatch(string op,
-            string FILE = __FILE__, uint LINE = __LINE__, Args...)
-        (auto ref Args args)
+    @system auto ref opDispatch(string op, Args...)(auto ref Args args)
         if (_canDispatch!(op, Args))
     {
         if (which_ == size_t.max)
-            throw new Error("Attempted to dispatch " ~ op ~ Args.stringof
-                    ~ " on an empty " ~ typeof(this).stringof, FILE, LINE);
+            throw new Error("dispatching " ~ op ~ Args.stringof
+                    ~ " on an empty " ~ typeof(this).stringof);
 
         mixin (_onActiveDuck!(
             q{
@@ -207,6 +206,10 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opUnary(string op)()
     {
+        if (which_ == size_t.max)
+            throw new Error("unary " ~ op ~ " on an empty "
+                    ~ typeof(this).stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin(op ~ "storageAs!Duck");
@@ -216,6 +219,11 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opIndexUnary(string op, Indices...)(Indices indices)
     {
+        if (which_ == size_t.max)
+            throw new Error("unary " ~ to!string(Indices.length)
+                    ~ "-indexing " ~ op ~ " on an empty "
+                    ~ typeof(this).stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin(op ~ "storageAs!Duck[" ~
@@ -226,6 +234,10 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opSliceUnary(string op, I, J)(I i, J j)
     {
+        if (which_ == size_t.max)
+            throw new Error("unary slicing " ~ op ~ " on an empty "
+                    ~ typeof(this).stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin(op ~ "storageAs!Duck[i .. j]");
@@ -235,6 +247,10 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opSliceUnary(string op)()
     {
+        if (which_ == size_t.max)
+            throw new Error("unary slicing " ~ op ~ " on an empty "
+                    ~ typeof(this).stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin(op ~ "storageAs!Duck[]");
@@ -244,15 +260,26 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opCast(T)()
     {
+        if (which_ == size_t.max)
+            throw new Error("casting an empty " ~ typeof(this).stringof
+                    ~ " to " ~ T.stringof);
+
         mixin (_onActiveDuck!(
             q{
-                return cast(T) storageAs!Duck;
+                static if (is(T == Duck))
+                    return         storageAs!Duck;
+                else
+                    return cast(T) storageAs!Duck;
             }));
         assert(0);
     }
 
     @system auto ref opBinary(string op, RHS)(RHS rhs)
     {
+        if (which_ == size_t.max)
+            throw new Error("binary " ~ op ~ " on an empty LHS "
+                    ~ typeof(this).stringof ~ " and RHS " ~ RHS.stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin("storageAs!Duck() " ~ op ~ " rhs");
@@ -262,6 +289,10 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opBinaryRight(string op, LHS)(LHS lhs)
     {
+        if (which_ == size_t.max)
+            throw new Error("binary " ~ op ~ " on LHS " ~ LHS.stringof
+                    ~ "and an empty RHS " ~ typeof(this).stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return mixin("lhs " ~ op ~ "storageAs!Duck");
@@ -271,6 +302,10 @@ struct Homogeneous(Ducks...)
 
     @system bool opEquals(RHS)(auto ref RHS rhs) const
     {
+        if (which_ == size_t.max)
+            throw new Error("comparing an empty " ~ typeof(this).stringof
+                    ~ " with " ~ RHS.stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return storageAs_const!Duck() == rhs;
@@ -297,9 +332,9 @@ struct Homogeneous(Ducks...)
     @system int opCmp(RHS)(auto ref RHS rhs) const
     {
         if (which_ == size_t.max)
-            throw new Error("Attempted to compare an unset "
-                    ~ typeof(this).stringof ~ " object with "
-                    ~ RHS.stringof);
+            throw new Error("comparing an empty " ~ typeof(this).stringof
+                    ~ " with " ~ RHS.stringof);
+
         mixin (_onActiveDuck!(
             q{
                 return (storageAs_const!Duck < rhs) ? -1 :
@@ -311,8 +346,9 @@ struct Homogeneous(Ducks...)
     @system int opCmp(RHS : typeof(this))(ref const RHS rhs) const
     {
         if (which_ == size_t.max || rhs.which_ == size_t.max)
-            throw new Error("Attmepted to compare unset "
-                    ~ typeof(this).stringof ~ " objects");
+            throw new Error("comparing empty " ~ typeof(this).stringof
+                    ~ " objects");
+
         mixin (_onActiveDuck!(
             q{
                 return -rhs.opCmp(storageAs_const!Duck);
@@ -322,6 +358,10 @@ struct Homogeneous(Ducks...)
 
     @system auto ref opCall(Args...)(auto ref Args args)
     {
+        if (which_ == size_t.max)
+            throw new Error("calling an empty " ~ typeof(this).stringof
+                    ~ " object");
+
         mixin (_onActiveDuck!(
             q{
                 return storageAs!Duck()(args);
@@ -916,6 +956,12 @@ version (unittest) private bool eq(S)(S a, S b)
             return false;
     }
     return true;
+}
+
+version (unittest) private bool fails(lazy void expr)
+{
+    try { expr; } catch (Error e) { return true; }
+    return false;
 }
 
 unittest
