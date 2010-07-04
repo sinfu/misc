@@ -144,8 +144,9 @@ writer.write("This is written to the file.");
 writer = MemoryWriter();
 writer.write("This is written to the memory.");
 
-// Examine the active writer
-assert(writer.instance!MemoryWriter.data == "This is written to the memory.");
+// Access to a MemoryWriter-specific member
+assert(writer.Homogeneous.instance!MemoryWriter.data
+        == "This is written to the memory.");
 --------------------
  */
 @safe struct Homogeneous(Ducks...)
@@ -667,10 +668,24 @@ unittest
     assert(!a.Homogeneous.isActive!string);
     real* r = &(a.Homogeneous.instance!real());
     assert(*r == -21.0L);
+
+    a = a.init;
+    assert(a.Homogeneous.empty);
 }
 
 unittest
 {
+    // implicit convertion
+    Homogeneous!(real, const(char)[]) a;
+    a = 42;
+    assert(a.Homogeneous.isActive!real);
+    a = "abc";
+    assert(a.Homogeneous.isActive!(const(char)[]));
+}
+
+unittest
+{
+    // foreach over input range
     Homogeneous!(string, wstring) str;
 
     str = cast(string) "a";
