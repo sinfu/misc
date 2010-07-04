@@ -149,7 +149,7 @@ assert(writer.Homogeneous.instance!MemoryWriter.data
         == "This is written to the memory.");
 --------------------
  */
-@safe struct Homogeneous(Ducks...)
+struct Homogeneous(Ducks...)
 {
     /**
      * Invokes the method $(D op) on the active object.
@@ -171,15 +171,11 @@ assert(writer.Homogeneous.instance!MemoryWriter.data
             throw new Error("Attempted to dispatch " ~ op ~ Args.stringof
                     ~ " on an empty " ~ typeof(this).stringof, FILE, LINE);
 
-        final switch (which_)
-        {
-            foreach (Duck; Ducks)
-            {
-            case duckID!Duck:
+        mixin (_onActiveDuck!(
+            q{
                 return mixin("storageAs!Duck()."
                         ~ (args.length == 0 ? op : op ~ "(args)"));
-            }
-        }
+            }));
         assert(0);
     }
 
@@ -209,7 +205,196 @@ assert(writer.Homogeneous.instance!MemoryWriter.data
     // operator overloads
     //----------------------------------------------------------------//
 
-    // TODO
+    @system auto ref opUnary(string op)()
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin(op ~ "storageAs!Duck");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opIndexUnary(string op, Indices...)(Indices indices)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin(op ~ "storageAs!Duck[" ~
+                        _commaExpand!("indices", Indices.length) ~ "]");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSliceUnary(string op, I, J)(I i, J j)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin(op ~ "storageAs!Duck[i .. j]");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSliceUnary(string op)()
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin(op ~ "storageAs!Duck[]");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opCast(T)()
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return cast(T) storageAs!Duck;
+            }));
+        assert(0);
+    }
+
+    @system auto ref opBinary(string op, RHS)(RHS rhs)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck() " ~ op ~ " rhs");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opBinaryRight(string op, LHS)(LHS lhs)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("lhs " ~ op ~ "storageAs!Duck");
+            }));
+        assert(0);
+    }
+
+    @system bool opEquals(RHS)(auto ref RHS rhs) const
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return storageAs_const!Duck() == rhs;
+            }));
+        assert(0);
+    }
+
+    @system bool opEquals(RHS : typeof(this))(ref const RHS rhs) const
+    {
+        if (which_ != size_t.max && which_ == rhs.which_)
+        {
+            mixin (_onActiveDuck!(
+                q{
+                    return storageAs_const!Duck() == rhs.storageAs_const!Duck;
+                }));
+            assert(0);
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    @system int opCmp(RHS)(auto ref RHS rhs) const
+    {
+        if (which_ == size_t.max)
+            throw new Error("Attempted to compare an unset "
+                    ~ typeof(this).stringof ~ " object with "
+                    ~ RHS.stringof);
+        mixin (_onActiveDuck!(
+            q{
+                return (storageAs_const!Duck < rhs) ? -1 :
+                       (storageAs_const!Duck > rhs) ?  1 : 0;
+            }));
+        assert(0);
+    }
+
+    @system int opCmp(RHS : typeof(this))(ref const RHS rhs) const
+    {
+        if (which_ == size_t.max || rhs.which_ == size_t.max)
+            throw new Error("Attmepted to compare unset "
+                    ~ typeof(this).stringof ~ " objects");
+        mixin (_onActiveDuck!(
+            q{
+                return -rhs.opCmp(storageAs_const!Duck);
+            }));
+        assert(0);
+    }
+
+    @system auto ref opCall(Args...)(auto ref Args args)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return storageAs!Duck()(args);
+            }));
+        assert(0);
+    }
+
+    @system auto ref opOpAssign(string op, RHS)(RHS rhs)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck() " ~ op ~ "= rhs");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opIndexOpAssign(string op, RHS, Indices...)
+        (RHS rhs, Indices indices)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck[" ~
+                        _commaExpand!("indices", Indices.length) ~
+                    "] " ~ op ~ "= rhs");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSliceOpAssign(string op, RHS, I, J)(RHS rhs, I i, J j)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck[i .. j] " ~ op ~ "= rhs");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSliceOpAssign(string op)(RHS rhs)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck[] " ~ op ~ "= rhs");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opIndex(Indices...)(Indices indices)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return mixin("storageAs!Duck[" ~
+                    _commaExpand!("indices", Indices.length) ~ "]");
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSlice(I, J)(I i, J j)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return storageAs!Duck[i .. j];
+            }));
+        assert(0);
+    }
+
+    @system auto ref opSlice(_Dummy = void)()
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return storageAs!Duck[];
+            }));
+        assert(0);
+    }
 
 
     //----------------------------------------------------------------//
@@ -415,6 +600,24 @@ private:
 
 
     /*
+     * Generates code for operating on the active duck.
+     */
+    template _onActiveDuck(string stmt)
+    {
+        enum string _onActiveDuck =
+                "assert(which_ != size_t.max);" ~
+            "L_chooseActive:" ~
+                "final switch (which_) {" ~
+                    "foreach (Duck; Ducks) {" ~
+                        "case duckID!Duck:" ~
+                            stmt ~
+                            "break L_chooseActive;" ~
+                    "}" ~
+                "}";
+    }
+
+
+    /*
      * Set $(D rhs) in the storage.
      */
     @trusted void grab(T)(ref T rhs)
@@ -458,18 +661,11 @@ private:
     }
     body
     {
-    L_match:
-        final switch (which_)
-        {
-            foreach (Duck; Ducks)
-            {
-            case duckID!Duck:
+        mixin (_onActiveDuck!(
+            q{
                 static if (__traits(compiles, storageAs!Duck() = rhs))
                     return storageAs!Duck() = rhs;
-                else
-                    break L_match;
-            }
-        }
+            }));
 
         // Or, alter the content with rhs.
         dispose();
@@ -494,6 +690,17 @@ private:
     /+ // @@@BUG3748@@@
     @system ref inout(T) storageAs(T)() inout nothrow
     +/
+    @system ref const(T) storageAs_const(T)() const nothrow
+        if (_homogenizes!(T))
+    {
+        foreach (Duck; Ducks)
+        {
+            static if (duckID!T == duckID!Duck)
+                return *cast(const Duck*) storage_.ptr;
+        }
+        assert(0);
+    }
+
 
 
     /*
@@ -506,16 +713,12 @@ private:
     }
     body
     {
-        final switch (which_)
-        {
-            foreach (Duck; Ducks)
-            {
-            case duckID!Duck:
+        mixin (_onActiveDuck!(
+            q{
                 static if (__traits(compiles, storageAs!Duck().__postblit()))
                     storageAs!Duck().__postblit();
                 return;
-            }
-        }
+            }));
         assert(0);
     }
 
@@ -535,17 +738,13 @@ private:
     }
     body
     {
-        final switch (which_)
-        {
-            foreach (Duck; Ducks)
-            {
-            case duckID!Duck:
+        mixin (_onActiveDuck!(
+            q{
                 static if (__traits(compiles, storageAs!Duck.__dtor()))
                     storageAs!Duck.__dtor();
                 which_ = size_t.max;
                 return;
-            }
-        }
+            }));
         assert(0);
     }
 
@@ -706,6 +905,298 @@ unittest
         assert(e == "\u3067\u3043\u30fc"d[i++]);
 }
 
+//--------------------------------------------------------------------//
+// operator overloads
+
+version (unittest) private bool eq(S)(S a, S b)
+{
+    foreach (i, _; a.tupleof)
+    {
+        if (a.tupleof[i] != b.tupleof[i])
+            return false;
+    }
+    return true;
+}
+
+unittest
+{
+    // opUnary
+    struct Tag { string op; }
+    struct OpEcho {
+        Tag opUnary(string op)() {
+            return Tag(op);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "~", "*", "++", "--"))
+    {
+        auto r = mixin(op ~ "obj");
+        assert(eq( r, Tag(op) ));
+    }
+}
+
+unittest
+{
+    // opIndexUnary
+    struct Tag { string op; int x; real y; }
+    struct OpEcho {
+        Tag opIndexUnary(string op)(int x, real y) {
+            return Tag(op, x, y);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "~", "*", "++", "--"))
+    {
+        auto r = mixin(op ~ "obj[4, 2.5]");
+        assert(eq( r, Tag(op, 4, 2.5) ));
+    }
+}
+
+unittest
+{
+    // opSliceUnary
+    struct Tag { string op; int x; real y; }
+    struct OpEcho {
+        Tag opSliceUnary(string op)(int x, real y) {
+            return Tag(op, x, y);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "~", "*", "++", "--"))
+    {
+        auto r = mixin(op ~ "obj[4 .. 5.5]");
+        assert(eq( r, Tag(op, 4, 5.5) ));
+    }
+}
+
+unittest
+{
+    // opCast
+    struct OpEcho {
+        T opCast(T)() { return T.init; }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (T; TypeTuple!(int, string, OpEcho))
+    {
+        auto r = cast(T) obj;
+        assert(is(typeof(r) == T));
+    }
+}
+
+unittest
+{
+    // opBinary, opBinaryRight
+    struct LTag { string op; int v; }
+    struct RTag { string op; int v; }
+    struct OpEcho {
+        LTag opBinary(string op)(int v) {
+            return LTag(op, v);
+        }
+        RTag opBinaryRight(string op)(int v) {
+            return RTag(op, v);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "*", "/", "%", "^^", "&",
+                "|", "^", "<<", ">>", ">>>", "~"/+, "in" @@@BUG@@@+/))
+    {
+        auto r = mixin("obj " ~ op ~ " 42");
+        assert(eq( r, LTag(op, 42) ));
+        auto s = mixin("76 " ~ op ~ " obj");
+        assert(eq( s, RTag(op, 76) ));
+    }
+}
+
+unittest
+{
+    // opEquals (forward)
+    struct Dummy {
+        bool opEquals(int v) const {
+            return v > 0;
+        }
+        bool opEquals(ref const Dummy) const { assert(0); }
+    }
+    Homogeneous!(Dummy) obj;
+
+    obj = Dummy();
+    assert(obj ==  1);
+    assert(obj !=  0);
+    assert(obj != -1);
+}
+
+unittest
+{
+    // opEquals (meta)
+    struct Dummy(int k) {
+        bool opEquals(int kk)(ref const Dummy!kk rhs) const {
+            return k == kk;
+        }
+    }
+    Homogeneous!(Dummy!0, Dummy!1) a, b;
+
+    a = Dummy!0();
+    b = Dummy!1();
+    assert(a == a);
+    assert(a != b);
+    assert(b == b);
+}
+
+unittest
+{
+    // opCmp (forward)
+    struct Dummy {
+        int opCmp(int v) const {
+            return 0 - v;
+        }
+        int opCmp(ref const Dummy) const { assert(0); }
+    }
+    Homogeneous!(Dummy) a;
+
+    a = Dummy();
+    assert(a >= 0);
+    assert(a > -1);
+    assert(a < 1);
+}
+
+unittest
+{
+    // opCmp (meta)
+    struct Dummy(int k) {
+        int opCmp(int kk)(ref const Dummy!kk r) const {
+            return k - kk;
+        }
+    }
+    Homogeneous!(Dummy!0, Dummy!1) a, b;
+
+    a = Dummy!0();
+    b = Dummy!1();
+    assert(a >= a);
+    assert(a <= b);
+    assert(a < b);
+    assert(b >= a);
+    assert(b <= b);
+    assert(b > a);
+}
+
+unittest
+{
+    // opCall
+    struct Tag { int x; real y; }
+    struct OpEcho {
+        Tag opCall(int x, real y) {
+            return Tag(x, y);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+//  obj = OpEcho(); // @@@BUG@@@
+    obj = OpEcho.init;
+    auto r = obj(4, 8.5);
+    assert(r == Tag(4, 8.5));
+}
+
+unittest
+{
+    // opOpAssign
+    struct Tag { string op; int v; }
+    struct OpEcho {
+        Tag opOpAssign(string op)(int v) {
+            return Tag(op, v);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "*", "/", "%", "^^", "&",
+                "|", "^", "<<", ">>", ">>>", "~"))
+    {
+        auto r = mixin("obj " ~ op ~ "= 97");
+        assert(eq( r, Tag(op, 97) ));
+    }
+}
+
+unittest
+{
+    // opIndexOpAssign
+    struct Tag { string op; int v; int x; real y; }
+    struct OpEcho {
+        Tag opIndexOpAssign(string op)(int v, int x, real y) {
+            return Tag(op, v, x, y);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "*", "/", "%", "^^", "&",
+                "|", "^", "<<", ">>", ">>>", "~"))
+    {
+        auto r = mixin("obj[4, 7.5] " ~ op ~ "= 42");
+        assert(eq( r, Tag(op, 42, 4, 7.5) ));
+    }
+}
+
+unittest
+{
+    // opSliceOpAssign
+    struct Tag { string op; int v; int i; real j; }
+    struct OpEcho {
+        Tag opSliceOpAssign(string op)(int v, int i, real j) {
+            return Tag(op, v, i, j);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (op; TypeTuple!("+", "-", "*", "/", "%", "^^", "&",
+                "|", "^", "<<", ">>", ">>>", "~"))
+    {
+        auto r = mixin("obj[4 .. 7.5] " ~ op ~ "= 42");
+        assert(eq( r, Tag(op, 42, 4, 7.5) ));
+    }
+}
+
+unittest
+{
+    // opIndex
+    struct Tag { int i; real j; }
+    struct OpEcho {
+        Tag opIndex(int i, real j) {
+            return Tag(i, j);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    auto r = obj[4, 9.5];
+    assert(eq( r, Tag(4, 9.5) ));
+}
+
+unittest
+{
+    // opSlice
+    struct Tag { int i; real j; }
+    struct OpEcho {
+        Tag opSlice(int i, real j) {
+            return Tag(i, j);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    auto r = obj[4 .. 9.5];
+    assert(eq( r, Tag(4, 9.5) ));
+}
+
 
 //----------------------------------------------------------------------------//
 
@@ -736,5 +1227,15 @@ private template _maxSize(size_t max, TT...)
     {
         enum _maxSize = max;
     }
+}
+
+private template _commaExpand(string array, size_t N)
+    if (N >= 1)
+{
+    static if (N == 1)
+        enum string _commaExpand = array ~ "[0]";
+    else
+        enum string _commaExpand = _commaExpand!(array, N - 1)
+            ~ ", " ~ array ~ "[" ~ N.stringof ~ " - 1]";
 }
 
