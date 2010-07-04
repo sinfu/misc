@@ -20,24 +20,23 @@ import std.stdio;
 
 void demo()
 {
-    Homogeneous!(FileStream, MemoryStream) sink;
+    Homogeneous!(FileWriter, MemoryWriter) sink;
 
     assert(sink.Homogeneous.empty);
 
-    // Set a MemoryStream.
-    auto memst = MemoryStream(512);
-    sink = memst;
+    // Set a MemoryWriter.
+    sink = MemoryWriter(512);
     sink.write("This is written to the memory.\n");
 
-    assert(sink.Homogeneous.isActive!MemoryStream);
-    assert(sink.Homogeneous.instance!MemoryStream.data ==
+    assert(sink.Homogeneous.isActive!MemoryWriter);
+    assert(sink.Homogeneous.instance!MemoryWriter.data ==
             "This is written to the memory.\n");
 
-    // Switch to a FileStream at run time.
-    sink = FileStream(stdout);
+    // Switch to a FileWriter at run time.
+    sink = FileWriter(stdout);
     sink.write("This is written to the stdout.\n");
 
-    assert(sink.Homogeneous.isActive!FileStream);
+    assert(sink.Homogeneous.isActive!FileWriter);
 
     // Copy constructor and destructor.
     {
@@ -51,7 +50,7 @@ void demo()
 }
 
 // Demo
-struct MemoryStream
+struct MemoryWriter
 {
     char[] buffer;
     size_t pos;
@@ -61,18 +60,18 @@ struct MemoryStream
     {
         buffer = new char[size];
         rc     = new int;
-        writeln("\t", ++*rc, " # MemoryStream this()");
+        writeln("\t", ++*rc, " # MemoryWriter this()");
     }
 
     this(this)
     {
-        writeln("\t", ++*rc, " > MemoryStream this(this)");
+        writeln("\t", ++*rc, " > MemoryWriter this(this)");
     }
 
     ~this()
     {
         if (rc)
-            writeln("\t", --*rc, " < MemoryStream ~this()");
+            writeln("\t", --*rc, " < MemoryWriter ~this()");
     }
 
     void write(in char[] data)
@@ -88,7 +87,7 @@ struct MemoryStream
 }
 
 // Demo
-struct FileStream
+struct FileWriter
 {
     File file;
     int* rc;
@@ -97,18 +96,18 @@ struct FileStream
     {
         file = f;
         rc   = new int;
-        writeln("\t", ++*rc, " # FileStream this()");
+        writeln("\t", ++*rc, " # FileWriter this()");
     }
 
     this(this)
     {
-        writeln("\t", ++*rc, " > FileStream this(this)");
+        writeln("\t", ++*rc, " > FileWriter this(this)");
     }
 
     ~this()
     {
         if (rc)
-            writeln("\t", --*rc, " < FileStream ~this()");
+            writeln("\t", --*rc, " < FileWriter ~this()");
     }
 
     void write(in char[] data)
