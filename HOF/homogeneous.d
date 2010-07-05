@@ -436,6 +436,17 @@ struct Homogeneous(Ducks...)
         assert(0);
     }
 
+    /+
+    // @@@ cannot coexist with input range primitives
+    @system int opApply(Args...)(int delegate(ref Args) dg)
+    {
+        mixin (_onActiveDuck!(
+            q{
+                return _storageAs!Duck().opApply(dg);
+            }));
+    }
+    +/
+
 
     //----------------------------------------------------------------//
     // managing stored object
@@ -1220,7 +1231,7 @@ unittest
         assert(eq( r, Tag(op, 42, 4, 7.5) ));
 
         auto s = mixin("obj[] " ~ op ~ "= 42");
-        assert(eq( r, Tag(op, 42, -1, -1) ));
+        assert(eq( s, Tag(op, 42, -1, -1) ));
     }
 }
 
@@ -1261,6 +1272,27 @@ unittest
     auto s = obj[];
     assert(eq( s, Tag(-1, -1) ));
 }
+
+/+
+unittest
+{
+    // opApply
+    struct OpEcho {
+        int opApply(int delegate(ref size_t, ref real) dg)
+        {
+            foreach (i, ref e; [ 1.L, 2.5L, 5.5L ])
+                if (auto r = dg(i, e))
+                    return r;
+            return 0;
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    foreach (size_t i, ref real e; obj)
+        assert(e == [ 1.L, 2.5L, 5.5L ][i]);
+}
++/
 
 
 //----------------------------------------------------------------------------//
