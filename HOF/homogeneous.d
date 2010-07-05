@@ -593,7 +593,9 @@ private:
     template _canAssign(T, size_t i = 0)
     {
         static if (i < Ducks.length)
-            enum bool _canAssign = __traits(compiles,
+            enum bool _canAssign =
+                is(Ducks[i] == T) ||
+                __traits(compiles,
                     function(ref Ducks[i] duck, T rhs)
                     {
                         duck = rhs;
@@ -974,6 +976,39 @@ version (unittest) private bool fails(lazy void expr)
 {
     try { expr; } catch (Error e) { return true; }
     return false;
+}
+
+unittest
+{
+    // opDispatch
+    struct Tag { string op; int n; }
+    struct OpEcho {
+        Tag opDispatch(string op)(int n) {
+            return Tag(op, n);
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    auto r = obj.foo(42);
+    assert(eq( r, Tag("foo", 42) ));
+}
+
+unittest
+{
+    // opAssign
+    struct Tag { string op; int n; }
+    struct OpEcho {
+        int n;
+        void opAssign(int n) {
+            this.n = n;
+        }
+    }
+    Homogeneous!(OpEcho) obj;
+
+    obj = OpEcho();
+    obj = 42;
+    assert(obj.n == 42);
 }
 
 unittest
