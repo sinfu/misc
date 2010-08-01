@@ -736,8 +736,8 @@ unittest
  *  the wide character to a narrow character sequence by calling $(D wcrtomb),
  *  and then convert it to a Unicode code point.
  *
- *  That said, some libc implementations (e.g. glibc and darwin libc) define
- *  $(D wchar_t) as UCS-4, and you can exploit it under such platforms.
+ *  That said, some libc implementations (e.g. glibc) define $(D wchar_t) as
+ *  UCS-4, and you can exploit it under such platforms.
  */
 @system struct FILELockingWideReader
 {
@@ -874,8 +874,8 @@ unittest
  *  the Unicode code point to a narrow character sequence in CTYPE-specified
  *  codeset, and then convert it to a wide character by calling $(D mbrtowc).
  *
- *  That said, some libc implementations (e.g. glibc and darwin libc) define
- *  $(D wchar_t) as UCS-4, and you can exploit it under such platforms.
+ *  That said, some libc implementations (e.g. glibc) define $(D wchar_t) as
+ *  UCS-4, and you can exploit it under such platforms.
  */
 @system struct FILELockingWideWriter
 {
