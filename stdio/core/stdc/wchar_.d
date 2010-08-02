@@ -70,8 +70,6 @@ else version( FreeBSD )
 }
 else version( Solaris )
 {
-    alias int wchar_t;
-
     struct mbstate_t
     {
         version (LP64)
@@ -87,7 +85,7 @@ else version( Solaris )
 
 alias wchar_t wint_t;
 
-enum wint_t WEOF = -1;
+enum wint_t WEOF = cast(wint_t) -1;
 
 int fwprintf(FILE* stream, in wchar_t* format, ...);
 int fwscanf(FILE* stream, in wchar_t* format, ...);

@@ -34,18 +34,19 @@ import std.string : toStringz;
 import std.traits : isSomeString, isArray;
 import std.utf    : isValidDchar, stride, decode, decodeFront, putUTF;
 
+import core.atomic : atomicOp;
+
 version (Windows)
 {
     import core.sys.windows.windows;
     import std.windows.syserror;
 
-    extern(Windows) BOOL AreFileApisANSI();
-
-    enum
+    private enum
     {
         ERROR_INVALID_PARAMETER   =  87,
         ERROR_INSUFFICIENT_BUFFER = 122,
     }
+    private enum CP_UTF8 = 65001;
 }
 else version (Posix)
 {
@@ -57,66 +58,193 @@ else version (Posix)
 }
 
 
-version (unittest) private
-{
-    // Simple 'appender' for testing converter outputs.
-    struct NaiveCatenator(E)
-    {
-        E[] data;
-        void put(in E[] str) { data ~= str; }
-        void put(E e) { data ~= e; }
-    }
-}
-
-
-//----------------------------------------------------------------------------//
-
 debug (USE_LIBICONV) private extern(C) @system
 {
     alias void* iconv_t;
 
     iconv_t iconv_open(in char*, in char*);
-    size_t  iconv(iconv_t, in ubyte**, size_t*, ubyte**, size_t*);
+    size_t  iconv(iconv_t, ubyte**, size_t*, ubyte**, size_t*);
     int     iconv_close(iconv_t);
 
     pragma(lib, "iconv");
 }
 
-/+
-// @@@ This doesn't work.
-static if (is(iconv_t)) version = HAVE_ICONV;
-+/
-version (linux) version = HAVE_ICONV;
-version (OSX) version = HAVE_ICONV;
-version (Solaris) version = HAVE_ICONV;
-debug (USE_LIBICONV) version = HAVE_ICONV;
 
+//----------------------------------------------------------------------------//
+// Utilities
+//----------------------------------------------------------------------------//
+
+/*
+ * Simple 'appender' for testing converter outputs.
+ */
+version (unittest)
+private @safe struct NaiveCatenator(E)
+{
+    E[] data;
+    void put(E e) { data ~= e; }
+    void put(in E[] str) { data ~= str; }
+}
+
+unittest
+{
+    NaiveCatenator!int nc;
+
+    nc.put(1);
+    nc.put([ 2,3,4 ]);
+    assert(nc.data == [ 1,2,3,4 ]);
+}
+
+
+/*
+ * Duplicates a zero-terminated string including the terminating zero.
+ */
+private @system immutable(char)[] dupCstringz(in char* cstr)
+in
+{
+    assert(cstr != null);
+}
+body
+{
+    size_t n = 0;
+
+    while (cstr[n++] != 0)
+        continue;
+    return cstr[0 .. n].idup;
+}
+
+unittest
+{
+    auto s1 = dupCstringz("012345\x00".ptr);
+    assert(s1 == "012345\x00");
+
+    auto s2 = dupCstringz("\x00".ptr);
+    assert(s2 == "\x00");
+}
+
+
+/*
+ * Range utility for reading a front element of $(D r) into $(D item) as
+ * a value of type $(D E).  Returns $(D false) if $(D r) is empty.
+ */
+private bool readNext(R, E)(ref R r, ref E item)
+        if (isInputRange!(R) && is(ElementType!R : E))
+{
+    if (r.empty)
+    {
+        return false;
+    }
+    else
+    {
+        item = r.front;
+        r.popFront();
+        return true;
+    }
+}
+
+unittest
+{
+    static struct R
+    {
+        byte i = 4;
+        @property bool empty() { return i == 0; }
+        @property byte front() { return i; }
+        void popFront() { --i; }
+    }
+    static assert(isInputRange!(R));
+    static assert(is(ElementType!R == byte));
+
+    R r;
+    byte  b;
+    short s;
+    int   i;
+    real  n;
+
+    readNext(r, b) || assert(0);
+    readNext(r, s) || assert(0);
+    readNext(r, i) || assert(0);
+    readNext(r, n) || assert(0);
+    assert(b == 4);
+    assert(s == 3);
+    assert(i == 2);
+    assert(n == 1);
+    assert(r.empty);
+    readNext(r, b) && assert(0);
+}
+
+
+//----------------------------------------------------------------------------//
+// Choose the backing transcoder
+//----------------------------------------------------------------------------//
 
 version (Windows)
 {
+    // Use WinNLS MultiByteToWideChar() and WideCharToMultiByte().
     version = TranscoderWinNLS;
 }
 else version (Posix)
 {
-    version (HAVE_ICONV) version = TranscoderIconv;
+//  static if (is(iconv_t)) version = HAVE_ICONV;   // @@@ doesn't work
+    version (linux) version = HAVE_ICONV;
+    version (Solaris) version = HAVE_ICONV;
+    debug (USE_LIBICONV) version = HAVE_ICONV;
+
+    // Use POSIX iconv.
+    version (HAVE_ICONV)
+        version = TranscoderIconv;
+    else
+        version = TranscoderNone;
+}
+else
+{
+    version = TranscoderNone;
 }
 
 
+/*
+ * Fall back to UTF-8 if we can't use system's converter.
+ */
+version = FallbackToUTF8;
+
+
 //----------------------------------------------------------------------------//
-// native codeset detection
+// Native codeset detection
 //----------------------------------------------------------------------------//
+
+/*
+ * We use our own transcoder for known codeset.
+ *
+ * OSX and FreeBSD have no libc iconv, so we should support common codeset
+ * (at least UTF-8) anyway.
+ */
+private enum KnownCodeset
+{
+    unknown,
+    UTF8,
+}
 
 version (Windows)
 {
-    // The OEM codepage at program startup.
+    // The ANSI codepage at program startup.
     immutable DWORD nativeCodepage;
 
     shared static this()
     {
-        // [??] MSDN on AreFileApisANSI() says:
-        //       "This function is useful for 8-bit console input
-        //        and output operations."
-        .nativeCodepage = AreFileApisANSI() ? GetACP() : GetOEMCP();
+        .nativeCodepage = GetACP();
+    }
+
+    /*
+     * Returns relevant $(D KnownCodeset) for known code page.
+     */
+    private @safe KnownCodeset checkKnownCodepage(DWORD codepage) pure nothrow
+    {
+        switch (codepage)
+        {
+          case CP_UTF8:
+            return KnownCodeset.UTF8;
+          default:
+            return KnownCodeset.unknown;
+        }
+        assert(0);
     }
 }
 else version (Posix)
@@ -124,13 +252,29 @@ else version (Posix)
     // The default CODESET langinfo at program startup.
     immutable string nativeCodeset;
 
-    // True if the native codeset is UTF-8.
-    @safe @property pure nothrow bool isNativeUTF8()
-    {
-        return .nativeCodeset == "UTF-8";
-    }
+    // Set to a member of KnownCodeset if the native codeset is known.
+    immutable KnownCodeset nativeKnown;
 
     shared static this()
+    {
+        .nativeCodeset = getNativeCodeset();
+
+        // We can use our own transcoder for known codeset.
+        switch (.nativeCodeset)
+        {
+          case "UTF-8":
+            .nativeKnown = KnownCodeset.UTF8;
+            break;
+
+          default: break;
+        }
+    }
+
+
+    /*
+     * Returns the native codeset according to the environment.
+     */
+    private @system string getNativeCodeset()
     {
         immutable(char)[] origCtypez;
 
@@ -139,54 +283,65 @@ else version (Posix)
         else
             origCtypez = "C\0";
 
-        // Temporarily set to the default locale to obtain the native codeset.
         setlocale(LC_CTYPE, "");
         scope(exit) setlocale(LC_CTYPE, origCtypez.ptr);
 
-        if (auto codeset = nl_langinfo(CODESET))
-            .nativeCodeset = dupCstringz(codeset)[0 .. $ - 1];
-        else
-            .nativeCodeset = "US-ASCII";
+        return getCurrentCodeset();
     }
 
-    // duplicate a string including the terminating zero
-    private @trusted immutable(char)[] dupCstringz(in char* cstr)
-    in
+    /*
+     * Returns the current CODESET langinfo, or $(D "US-ASCII") on failure.
+     */
+    private @system string getCurrentCodeset()
     {
-        assert(cstr != null);
-    }
-    body
-    {
-        size_t n = 0;
-        while (cstr[n++] != 0) continue;
-        return cstr[0 .. n].idup;
+        enum string FALLBACK = "US-ASCII";
+
+        if (auto codeset = nl_langinfo(CODESET))
+            return dupCstringz(codeset)[0 .. $ - 1];
+        else
+            return FALLBACK;
     }
 }
 else
 {
     // Dunno how to detect the native codeset.
-    enum bool isNativeUTF8 = false;
+    enum KnownCodeset nativeKnown = KnownCodeset.unknown;
 }
 
 
-// Detect GNU iconv as its behavior slightly differs from the POSIX standard
-version (TranscoderIconv)
+//----------------------------------------------------------------//
+
+// Detect GNU iconv as its behavior slightly differs from the POSIX standard.
+version (TranscoderIconv) private
 {
-    immutable bool isIconvGNU;      // true <= iconv by GNU
-
-    shared static this()
+    version (linux)
     {
-        iconv_t cd = iconv_open("US-ASCII//IGNORE", "");
+        enum bool isIconvGNU = true;
+    }
+    else debug (USE_LIBICONV)
+    {
+        immutable bool isIconvGNU;  // $(D true) if GNU libiconv
 
-        if (cd != cast(iconv_t) -1)
+        shared static this()
         {
-            .isIconvGNU = true; // maybe
-            iconv_close(cd);
+            iconv_t cd = iconv_open("US-ASCII//IGNORE", "");
+
+            if (cd != cast(iconv_t) -1)
+            {
+                .isIconvGNU = true; // maybe
+                iconv_close(cd);
+            }
         }
+    }
+    else
+    {
+        enum bool isIconvGNU = false;
     }
 }
 
 
+//----------------------------------------------------------------------------//
+// Types
 //----------------------------------------------------------------------------//
 
 class EncodingException : Exception
@@ -236,28 +391,67 @@ enum ConversionMode
      * Throws:
      *  $(D EncodingException) if conversion is not supported.
      */
+  version (TranscoderWinNLS)
     this(ConversionMode mode)
     {
-        version (TranscoderWinNLS)
-        {
-            DWORD codepage;
+        DWORD codepage;
 
-            final switch (mode)
-            {
-              case ConversionMode.native : codepage = .nativeCodepage; break;
-              case ConversionMode.console: codepage =  GetConsoleCP(); break;
-            }
+        // ConsoleOutputCP should be preferred for console.
+        final switch (mode)
+        {
+          case ConversionMode.native : codepage = .nativeCodepage; break;
+          case ConversionMode.console: codepage =  GetConsoleCP(); break;
+        }
+
+        // We can use our own converter for known codeset.
+        final switch (checkKnownCodepage(codepage))
+        {
+          case KnownCodeset.UTF8:
+            decoder_ = UTF8Decoder();
+            break;
+
+            // Unknown -- use Windows' transcoder.
+          case KnownCodeset.unknown:
             decoder_ = WindowsNativeCodesetDecoder(codepage);
+            break;
         }
-        else version (TranscoderIconv)
+    }
+
+    /*
+     * For POSIX platforms that have iconv.
+     */
+  version (TranscoderIconv)
+    this(ConversionMode )
+    {
+        // We can use our own converter for known codeset.
+        final switch (.nativeKnown)
         {
+          case KnownCodeset.UTF8:
+            decoder_ = UTF8Decoder();
+            break;
+
+          case KnownCodeset.unknown:
             decoder_ = IconvNativeCodesetDecoder(.nativeCodeset);
+            break;
         }
-        else
+    }
+
+    /*
+     * Default
+     */
+  version (TranscoderNone)
+    this(ConversionMode )
+    {
+        // We can still support UTF-8.
+        final switch (.nativeKnown)
         {
-            if (.isNativeUTF8)
-                // We can use our own decoder implementation.
-                decoder_ = UTF8Decoder();
+          case KnownCodeset.UTF8:
+            decoder_ = UTF8Decoder();
+            break;
+
+          case KnownCodeset.unknown:
+            version (FallbackToUTF8)
+                goto case KnownCodeset.UTF8;
             else
                 throw new EncodingException("conversion between native codeset "
                         ~"and Unicode is not supported", __FILE__, __LINE__);
@@ -265,11 +459,7 @@ enum ConversionMode
     }
 
 
-    void opAssign(typeof(this) rhs)
-    {
-        swap(this, rhs);
-    }
-
+    //----------------------------------------------------------------//
 
     /*
      * Resets conversion state to the initial state.
@@ -308,14 +498,19 @@ enum ConversionMode
 private:
     version (TranscoderWinNLS)
     {
-        WindowsNativeCodesetDecoder decoder_;
+        TaggedUnion!(UTF8Decoder,
+                     WindowsNativeCodesetDecoder)
+                    decoder_;
     }
     else version (TranscoderIconv)
     {
-        IconvNativeCodesetDecoder decoder_;
+        TaggedUnion!(UTF8Decoder,
+                     IconvNativeCodesetDecoder)
+                    decoder_;
     }
     else
     {
+        // For falling back to UTF-8
         UTF8Decoder decoder_;
     }
 }
@@ -728,15 +923,17 @@ private @system struct IconvNativeCodesetDecoder
         errnoEnforce(decoder_ != cast(iconv_t) -1);
     }
 
-    this(this)
+    this(this) //shared
     {
+        auto copyCount_ = cast(shared) this.copyCount_;
         if (copyCount_)
-            ++*copyCount_;
+            atomicOp!"+="(*copyCount_, 1);
     }
 
-    ~this()
+    ~this() //shared
     {
-        if (copyCount_ && (*copyCount_)-- == 0)
+        auto copyCount_ = cast(shared) this.copyCount_;
+        if (copyCount_ && atomicOp!"-="(*copyCount_, 1) == -1)
             errnoEnforce(iconv_close(decoder_) != -1);
     }
 
@@ -749,10 +946,10 @@ private @system struct IconvNativeCodesetDecoder
         if (copyCount_ is null)
             return;
 
-        const(ubyte)* src     = null;
-        size_t        srcLeft = 0;
-        ubyte*        dst     = null;
-        size_t        dstLeft = 0;
+        ubyte* src     = null;
+        size_t srcLeft = 0;
+        ubyte* dst     = null;
+        size_t dstLeft = 0;
 
         if (iconv(decoder_, &src, &srcLeft, &dst, &dstLeft) == -1)
             throw new ErrnoException("resetting iconv conversion state");
@@ -959,34 +1156,78 @@ version (HAVE_ICONV) unittest
      * Throws:
      *  - $(D EncodingException) if conversion is not supported.
      */
+  version (TranscoderWinNLS)
     this(ConversionMode mode)
     {
-        version (TranscoderWinNLS)
-        {
-            DWORD codepage;
+        DWORD codepage;
 
-            final switch (mode)
-            {
-              case ConversionMode.native : codepage =      .nativeCodepage; break;
-              case ConversionMode.console: codepage = GetConsoleOutputCP(); break;
-            }
+        // ConsoleOutputCP should be preferred for console.
+        final switch (mode)
+        {
+          case ConversionMode.native : codepage =      .nativeCodepage; break;
+          case ConversionMode.console: codepage = GetConsoleOutputCP(); break;
+        }
+
+        // We can use our own converter for known codeset.
+        final switch (checkKnownCodepage(codepage))
+        {
+          case KnownCodeset.UTF8:
+            encoder_ = chainConverters(
+                    UTFTextConverter!char(),
+                    CastingConverter!ubyte());
+            break;
+
+            // Unknown -- use Windows' transcoder.
+          case KnownCodeset.unknown:
             encoder_ = chainConverters(
                     UTFTextConverter!wchar(),
                     WindowsNativeCodesetEncoder(codepage));
+            break;
         }
-        else version (TranscoderIconv)
+    }
+
+    /*
+     * For POSIX platforms that have iconv.
+     */
+  version (TranscoderIconv)
+    this(ConversionMode )
+    {
+        // We can use our own converter for known codeset.
+        final switch (.nativeKnown)
         {
+          case KnownCodeset.UTF8:
+            encoder_ = chainConverters(
+                    UTFTextConverter!char(),
+                    CastingConverter!ubyte());
+            break;
+
+            // Unknown codeset -- use system's iconv.
+          case KnownCodeset.unknown:
             encoder_ = chainConverters(
                     UTFTextConverter!char(),
                     IconvNativeCodesetEncoder(.nativeCodeset));
+            break;
         }
-        else
+    }
+
+    /*
+     * Default.
+     */
+  version (TranscoderNone)
+    this(ConversionMode )
+    {
+        // We can still support UTF-8.
+        final switch (.nativeKnown)
         {
-            if (.isNativeUTF8)
-                // We can use our own encoder implementation.
-                encoder_ = chainConverters(
-                        UTFTextConverter!char(),
-                        CastingConverter!ubyte());
+          case KnownCodeset.UTF8:
+            encoder_ = chainConverters(
+                    UTFTextConverter!char(),
+                    CastingConverter!ubyte());
+            break;
+
+          case KnownCodeset.unknown:
+            version (FallbackToUTF8)
+                goto case KnownCodeset.UTF8;
             else
                 throw new EncodingException("conversion between native codeset "
                         ~"and Unicode is not supported", __FILE__, __LINE__);
@@ -994,11 +1235,7 @@ version (HAVE_ICONV) unittest
     }
 
 
-    void opAssign(typeof(this) rhs)
-    {
-        swap(this, rhs);
-    }
-
+    //----------------------------------------------------------------//
 
     /*
      * Resets conversion state to the initial state.
@@ -1041,18 +1278,22 @@ version (HAVE_ICONV) unittest
 private:
     version (TranscoderWinNLS)
     {
-        ConverterChain!(UTFTextConverter!wchar, WindowsNativeCodesetEncoder)
-                encoder_;
+        TaggedUnion!(
+            ConverterChain!(UTFTextConverter!wchar, WindowsNativeCodesetEncoder),
+            ConverterChain!(UTFTextConverter!char, CastingConverter!ubyte))
+                            encoder_;
     }
     else version (TranscoderIconv)
     {
-        ConverterChain!(UTFTextConverter!char, IconvNativeCodesetEncoder)
-                encoder_;
+        TaggedUnion!(
+            ConverterChain!(UTFTextConverter!char, IconvNativeCodesetEncoder),
+            ConverterChain!(UTFTextConverter!char, CastingConverter!ubyte))
+                            encoder_;
     }
     else
     {
         ConverterChain!(UTFTextConverter!char, CastingConverter!ubyte)
-                encoder_;
+                            encoder_;
     }
 }
 
@@ -1265,13 +1506,15 @@ private @system struct IconvNativeCodesetEncoder
 
     this(this)
     {
+        auto copyCount_ = cast(shared) copyCount_;
         if (copyCount_)
-            ++*copyCount_;
+            atomicOp!"+="(*copyCount_, 1);
     }
 
     ~this()
     {
-        if (copyCount_ && (*copyCount_)-- == 0)
+        auto copyCount_ = cast(shared) copyCount_;
+        if (copyCount_ && atomicOp!"-="(*copyCount_, 1) == -1)
             errnoEnforce(iconv_close(encoder_) != -1);
     }
 
@@ -1284,10 +1527,10 @@ private @system struct IconvNativeCodesetEncoder
         if (copyCount_ is null)
             return;
 
-        const(ubyte)* src     = null;
-        size_t        srcLeft = 0;
-        ubyte*        dst     = null;
-        size_t        dstLeft = 0;
+        ubyte* src     = null;
+        size_t srcLeft = 0;
+        ubyte* dst     = null;
+        size_t dstLeft = 0;
 
         if (iconv(encoder_, &src, &srcLeft, &dst, &dstLeft) == -1)
             throw new ErrnoException("resetting iconv conversion state");
@@ -1315,7 +1558,7 @@ private @system struct IconvNativeCodesetEncoder
         ubyte[128] mcharsStack = void;
         ubyte[]    mchars      = mcharsStack;
 
-        auto src     = cast(const(ubyte)*) chunk.ptr;
+        auto src     = cast(ubyte*) chunk.ptr;
         auto srcLeft = chunk.length;
 
         while (srcLeft > 0)
@@ -1345,7 +1588,7 @@ private @system struct IconvNativeCodesetEncoder
                         srcLeft -= k;
                         continue;
                     }
-                    throw new EncodingException("invalid Unicode code point in "
+                   throw new EncodingException("invalid Unicode code point in "
                             ~"the input string", __FILE__, __LINE__);
 
                   case E2BIG:
@@ -1810,53 +2053,210 @@ unittest
 
 
 //----------------------------------------------------------------------------//
+// [internal] TaggedUnion
+//----------------------------------------------------------------------------//
+
+import core.stdc.string : memcpy;
 
 /*
- * Range utility for reading out a front element of $(D r) into $(D item) as
- * a value of type $(D E).  Returns $(D false) if $(D r) is empty.
+ * Naive, easy, light version of Algebraic for working around compiler bugs
+ * triggered by Algebraic implementation...
  */
-private bool readNext(R, E)(ref R r, ref E item)
-        if (isInputRange!(R) && is(ElementType!R : E))
+@system struct TaggedUnion(Types...)
 {
-    if (r.empty)
+    /*
+     * Invokes $(D op) on the active object.  The set of allowed operations is
+     * the intersection of the ones of $(D Types...).
+     */
+    auto ref opDispatch(string op, Args...)(auto ref Args args)
+    in { assert(which_ >= 0, "opDispatch (unbound)"); }
+    body
     {
-        return false;
+        mixin (onActive!
+            q{
+                return mixin("storeAs!Active."~ op ~"(args)");
+            });
+        assert(0);
     }
-    else
+
+    /*
+     * Invokes copy constructor (if any) of the active object.
+     */
+    @system this(this)
     {
-        item = r.front;
-        r.popFront();
-        return true;
+        if (which_ < 0)
+            return;
+
+        mixin (onActive!
+            q{
+                Active* store = &(0, storeAs!Active);
+                Active  init  = Active.init;
+                Active  copy  = *store;
+
+                // Swap the bit representation of store with copy.
+                memcpy( store, &copy, Active.sizeof);
+                memcpy(&copy , &init, Active.sizeof);
+                return;
+            });
+        assert(0);
     }
+
+    /*
+     * Invokes destructor (if any) of the active object.
+     */
+    ~this()
+    {
+        if (which_ < 0)
+            return;
+
+        mixin (onActive!
+            q{
+                .clear(storeAs!Active);
+                return;
+            });
+        assert(0);
+    }
+
+    /*
+     * Bind a object.  Reassigning is forbidden.
+     */
+    @system void opAssign(RHS)(RHS rhs)
+    in { assert(which_ == -1, "reassign"); }
+    body
+    {
+        foreach (i, Type; Types)
+        {
+            static if (is(Type == RHS))
+            {
+                Type* store = &(0, storeAs!Type);
+                Type  init  = Type.init;
+
+                // Need to put store in the safe initial state because the
+                // assignment below would invoke a destructor on store.
+                memcpy(store, &init, rhs.sizeof);
+
+                // Explicitly assign rhs for invoking copy constructor.
+                *store = rhs;
+                which_ = i;
+                return;
+            }
+        }
+        assert(0);
+    }
+
+
+    // @@@BUG4424@@@ workaround
+    private template workaround4424()
+        { @disable void opAssign(...) { assert(0); } }
+    mixin workaround4424 workaround4424_;
+
+
+    //----------------------------------------------------------------//
+    // Internals
+    //----------------------------------------------------------------//
+private:
+
+    /*
+     * Returns a reference to the internal store as $(D T).
+     */
+    @system @property ref T storeAs(T)() nothrow
+    {
+        return *cast(T*) store_.ptr;
+    }
+
+    /*
+     * Executes statement $(D stmt) with an active object type $(D Active).
+     */
+    template onActive(string stmt)
+    {
+        enum string onActive =
+             "final switch (which_)"
+            ~"{"
+                ~"foreach (i, Active; Types)"
+                ~"{"
+                  ~"case i:"
+                    ~ stmt
+                    ~"break;"
+                ~"}"
+            ~"}";
+    }
+
+
+    //----------------------------------------------------------------//
+    template maxSize(Types...)
+    {
+        static if (Types.length > 1)
+        {
+            static if (Types[0].sizeof > maxSize!(Types[1 .. $]))
+                enum size_t maxSize = Types[0].sizeof;
+            else
+                enum size_t maxSize = maxSize!(Types[1 .. $]);
+        }
+        else
+        {
+            enum size_t maxSize = Types[0].sizeof;
+        }
+    }
+
+private:
+    enum LEN = (maxSize!Types + (void*).sizeof - 1) / (void*).sizeof;
+    int        which_ = -1;
+    void*[LEN] store_;
 }
 
 unittest
 {
-    static struct R
+    // Copy constructor & destructor.
+    static struct A
     {
-        byte i = 4;
-        @property bool empty() { return i == 0; }
-        @property byte front() { return i; }
-        void popFront() { --i; }
+        int* count_;
+        int count() { return *count_; }
+        this(this) { count_ && ++*count_; }
+        ~this()    { count_ && --*count_; }
     }
-    static assert(isInputRange!(R));
-    static assert(is(ElementType!R == byte));
+    TaggedUnion!(A) a;
 
-    R r;
-    byte  b;
-    short s;
-    int   i;
-    real  n;
+    a = A(new int);
+    {
+        auto a1 = a;
+        assert(a.count == 1);
+        {
+            auto a2 = a;
+            assert(a.count == 2);
+        }
+        assert(a.count == 1);
+    }
+    assert(a.count == 0);
+}
 
-    readNext(r, b) || assert(0);
-    readNext(r, s) || assert(0);
-    readNext(r, i) || assert(0);
-    readNext(r, n) || assert(0);
-    assert(b == 4);
-    assert(s == 3);
-    assert(i == 2);
-    assert(n == 1);
-    assert(r.empty);
-    readNext(r, b) && assert(0);
+unittest
+{
+    static struct A
+    {
+        int compute(int x, int y) { return x + y; }
+    }
+    static struct B
+    {
+        int k;
+        int compute(int x, int y) { return x * y + k; }
+    }
+
+    // Bind an A
+    {
+        TaggedUnion!(A, B) ab;
+
+        ab = A();
+        assert(ab.compute(1, 2) == 1 + 2);
+        assert(ab.compute(5, 6) == 5 + 6);
+    }
+
+    // Bind a B
+    {
+        TaggedUnion!(A, B) ab;
+
+        ab = B(-2);
+        assert(ab.compute(1, 2) == 1*2 - 2);
+        assert(ab.compute(5, 6) == 5*6 - 2);
+    }
 }
 

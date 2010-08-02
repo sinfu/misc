@@ -108,6 +108,8 @@ private:
         handle_  = handle;
         encoder_ = NativeCodesetEncoder(ConversionMode.console);
     }
+    // MSDN says that standard streams should use a console code page anyway:
+    //   http://msdn.microsoft.com/en-us/goglobal/bb688114.aspx
 
 public:
     //----------------------------------------------------------------//
