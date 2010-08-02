@@ -19,13 +19,13 @@ void main()
  */
 void write(Args...)(Args args)
 {
-    stdout.write(args);
+    .stdout.write(args);
 }
 
 /// ditto
 void writeln(Args...)(Args args)
 {
-    stdout.writeln(args);
+    .stdout.writeln(args);
 }
 
 
@@ -34,13 +34,13 @@ void writeln(Args...)(Args args)
  */
 void writef(Format, Args...)(Format format, Args args)
 {
-    stdout.writef(format, args);
+    .stdout.writef(format, args);
 }
 
 /// ditto
 void writefln(Format, Args...)(Format format, Args args)
 {
-    stdout.writefln(format, args);
+    .stdout.writefln(format, args);
 }
 
 
@@ -83,37 +83,6 @@ import core.stdc.errno;
 import core.stdc.stdio;
 import core.stdc.wchar_;
 
-version (Windows) private
-{
-    version (DigitalMars)
-    {
-        extern(C) @system
-        {
-            int setmode(int, int);
-            extern __gshared ubyte[_NFILE] __fhnd_info;
-        }
-        alias setmode _setmode;
-        int _fileno(FILE* fp) { return fp._file; }
-
-        enum
-        {
-            _O_BINARY = 0x8000,
-
-            FHND_APPEND = 0x04,
-            FHND_DEVICE = 0x08,
-            FHND_TEXT   = 0x10,
-            FHND_BYTE   = 0x20,
-            FHND_WCHAR  = 0x40,
-        }
-    }
-    else
-    {
-        int _setmode(int, int) { return 0; }
-        int _fileno(FILE* fp) { return 0; }
-        enum _O_BINARY = 0;
-    }
-}
-
 
 /**
  * Standard output handle synchronized with C stdio functions.
@@ -122,7 +91,7 @@ shared StandardOutput stdout;
 
 shared static this()
 {
-    assumeUnshared(stdout) = StandardOutput(core.stdc.stdio.stdout);
+    assumeUnshared(.stdout) = StandardOutput(core.stdc.stdio.stdout);
 }
 
 
@@ -226,11 +195,13 @@ public:
     static struct LockingBinaryWriter
     {
     private:
+        FILEBinmodeScope      binmode_;
         FILELockingByteWriter writer_;
 
         this(FILE* handle)
         {
-            writer_ = FILELockingByteWriter(handle);
+            writer_  = FILELockingByteWriter(handle);
+            binmode_ = FILEBinmodeScope(handle);
         }
 
     public:
@@ -242,14 +213,15 @@ public:
     /**
      * Writes $(D buffer) to the file.
      */
-    void rawWrite(E)(in E[] buffer) shared
+    void rawWrite(T)(in T[] buffer) shared
     {
-        LockedFILE locker = handle_;
+        auto locker   = FILELocker(handle_);
+        auto binscope = FILEBinmodeScope(handle_);
 
         for (const(E)[] rest = buffer; !rest.empty; )
         {
             immutable size_t consumed =
-                fwrite(rest.ptr, E.sizeof, rest.length, locker.handle) / E.sizeof;
+                fwrite(rest.ptr, T.sizeof, rest.length, locker.handle) / T.sizeof;
 
             if (consumed < rest.length)
                 rest = rest[consumed .. $];
@@ -305,7 +277,7 @@ public:
 //----------------------------------------------------------------------------//
 // FILE Locking Utilities
 //----------------------------------------------------------------------------//
-// struct LockedFILE;               Abstracts flockfile() etc.
+// struct FILELocker;               Abstracts flockfile() etc.
 // struct FILELockingByteReader;    Input range for reading ubyte's.
 // struct FILELockingByteWriter;    Output range for writing ubyte's.
 // struct FILELockingWideReader;    Input range for reading wchar_t's.
@@ -363,7 +335,7 @@ private extern(C) @system
  * Manages a thread lock associated with a $(D FILE*) handle with reference
  * counting.
  */
-private @system struct LockedFILE
+private @system struct FILELocker
 {
 private:
     FILE* handle_;
@@ -417,7 +389,7 @@ unittest
     scope(exit) fclose(fp), std.file.remove(deleteme);
 
     // copy construction
-    auto locker = LockedFILE(fp);
+    auto locker = FILELocker(fp);
     assert(locker.handle is fp);
     {
         auto copy1 = locker;
@@ -449,7 +421,7 @@ private:
         bool  wantNext = true;
     }
     State*     state_;
-    LockedFILE locker_;
+    FILELocker locker_;
 
 public:
     /**
@@ -465,7 +437,7 @@ public:
     {
         enforce(fwide(handle, 0) <= 0, "File must be byte oriented");
         state_  = new State;
-        locker_ = LockedFILE(handle);
+        locker_ = FILELocker(handle);
     }
 
 
@@ -602,7 +574,7 @@ unittest
 @system struct FILELockingByteWriter
 {
 private:
-    LockedFILE locker_;
+    FILELocker locker_;
 
 public:
     /**
@@ -617,7 +589,7 @@ public:
     this(FILE* handle)
     {
         enforce(fwide(handle, 0) <= 0, "File must be byte oriented");
-        locker_ = LockedFILE(handle);
+        locker_ = FILELocker(handle);
     }
 
 
@@ -702,9 +674,9 @@ unittest
             }
         }
 
-        // Write a sequence: (1 2 3 ... 20).
+        // Write a sequence: (1 2 3 ... 20) excluding 10 and 13.
         writer.put([ 1,2,3,4 ]);
-        writer.put([ 5,6,7,8,9,10,11,12,13,14,15 ]);
+        writer.put([ 5,6,7,8,9,11,12,14,15 ]);
         writer.put(16);
         {
             auto copyWriter1 = writer;
@@ -718,7 +690,7 @@ unittest
 
     // Check the written content.
     immutable ubyte[] witness =
-        [ 1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20 ];
+        [ 1,2,3,4,5,6,7,8,9,11,12,14,15,16,17,18,19,20 ];
     assert(std.file.read(deleteme) == witness);
 }
 
@@ -749,7 +721,7 @@ private:
         bool    wantNext = true;
     }
     State*     state_;
-    LockedFILE locker_;
+    FILELocker locker_;
 
 public:
     /**
@@ -765,7 +737,7 @@ public:
     {
         enforce(fwide(handle, 0) >= 0, "File must be wide oriented");
         state_  = new State;
-        locker_ = LockedFILE(handle);
+        locker_ = FILELocker(handle);
     }
 
 
@@ -880,7 +852,7 @@ unittest
 @system struct FILELockingWideWriter
 {
 private:
-    LockedFILE locker_;
+    FILELocker locker_;
 
 public:
     /**
@@ -895,7 +867,7 @@ public:
     this(FILE* handle)
     {
         enforce(fwide(handle, 0) >= 0, "File must be wide oriented");
-        locker_ = LockedFILE(handle);
+        locker_ = FILELocker(handle);
     }
 
 
@@ -965,6 +937,134 @@ unittest
 
     assert(__traits(compiles, writer.put(wch )));
     assert(__traits(compiles, writer.put(wstr)));
+}
+
+
+//----------------------------------------------------------------------------//
+// Windows' Binary Mode
+//----------------------------------------------------------------------------//
+// struct FILEBinmodeScope      Keeps FILE in binary mode during lifetime.
+//----------------------------------------------------------------------------//
+
+version (Windows) private @system
+{
+    version (DigitalMars)
+    {
+        extern(C)
+        {
+            int setmode(int, int);
+            extern __gshared ubyte[_NFILE] __fhnd_info;
+        }
+        alias setmode _setmode;
+        int _fileno(FILE* fp) { return fp._file; }
+
+        enum
+        {
+            _O_BINARY   = 0x8000,
+            FHND_TEXT   = 0x10,
+            FHND_BYTE   = 0x20,
+        }
+    }
+    else
+    {
+        int _setmode(int, int) { return 0; }
+        int _fileno(FILE* fp) { return 0; }
+        enum _O_BINARY = 0;
+    }
+}
+
+/**
+ * Keeps a $(D FILE*) handle in binary mode during its lifetime.
+ *
+ * This object is not copiable.
+ */
+version (Windows)
+@system struct FILEBinmodeScope
+{
+private:
+    FILE* handle_;
+    int   mode_;
+
+  version (DigitalMars)
+    ubyte info_;    // @@@BUG4243@@@ workaround
+
+public:
+    /**
+     * Start binary mode I/O on a valid $(D FILE*) handle.
+     *
+     * The constructor flushes the buffer of the file stream because changing
+     * translation mode would mess the buffered data.  The destructor will
+     * flush the buffer for the same reason.
+     */
+    this(FILE* handle)
+    in
+    {
+        assert(handle);
+    }
+    body
+    {
+        // Need to flush the buffer before changing translation mode.
+        fflush(handle);
+
+        mode_   = _setmode(_fileno(handle), _O_BINARY);
+        handle_ = handle;
+
+        version (DigitalMars)
+        {
+            // @@@BUG4243@@@ workaround
+            auto fno = _fileno(handle);
+            info_ = __fhnd_info[fno];
+            __fhnd_info[fno] &= ~FHND_TEXT;
+            __fhnd_info[fno] |=  FHND_BYTE;
+        }
+    }
+
+    ~this()
+    {
+        if (handle_ is null)
+            return;
+
+        // Need to flush the buffer before restoring translation mode.
+        fflush(handle_);
+        _setmode(_fileno(handle_), mode_);
+
+        version (DigitalMars)
+        {
+            // @@@BUG4243@@@ workaround
+            __fhnd_info[_fileno(handle_)] = info_;
+        }
+    }
+
+    @disable this(this);
+}
+
+version (Windows)
+unittest
+{
+    enum string deleteme = "deleteme";
+
+    FILE* fp = fopen(deleteme, "w");
+    assert(fp, "Cannot open file for writing");
+    scope(exit) std.file.remove(deleteme);
+
+    fputs("\n\r\n", fp);
+    {
+        auto binmode = FILEBinmodeScope(fp);
+        fputs("\n\r\n", fp);
+    }
+    fputs("\n\r\n", fp);
+    fclose(fp);
+
+    // Check the written data.
+    auto data = cast(string) std.file.read(deleteme);
+    assert(data == "\r\n\r\r\n" ~ "\n\r\n" ~ "\r\n\r\r\n");
+    // Translation:  ^     ^                   ^     ^
+}
+
+version (Windows) {} else
+@system struct FILEBinmodeScope
+{
+    this(FILE*) {}
 }
 
 
