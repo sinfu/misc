@@ -60,9 +60,7 @@ void writefln(Format, Args...)(Format format, Args args)
 //     void writef  (format, args...);
 //     void writefln(format, args...);
 //
-//     // Binary writing capabilities
-//     @property LockingBinaryWriter lockingBinaryWriter();
-//
+//     // Binary writing capability
 //     void rawWrite(T)(in T[] data);
 //
 //     // FILE interfaces
@@ -179,36 +177,8 @@ public:
 
 
     //----------------------------------------------------------------//
-    // Raw Binary Writing Capabilities
+    // Raw Binary Writing Capability
     //----------------------------------------------------------------//
-
-    /**
-     * Returns an output range that writes raw byte sequences to a locked
-     * standard stream.
-     */
-    @property LockingBinaryWriter lockingBinaryWriter() shared
-    {
-        return LockingBinaryWriter(handle_);
-    }
-
-    /// ditto
-    static struct LockingBinaryWriter
-    {
-    private:
-        FILEBinmodeScope      binmode_;
-        FILELockingByteWriter writer_;
-
-        this(FILE* handle)
-        {
-            writer_  = FILELockingByteWriter(handle);
-            binmode_ = FILEBinmodeScope(handle);
-        }
-
-    public:
-        void put(   ubyte   datum) { writer_.put(datum); }
-        void put(in ubyte[] chunk) { writer_.put(chunk); }
-    }
-
 
     /**
      * Writes $(D buffer) to the file.
