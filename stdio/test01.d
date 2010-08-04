@@ -132,10 +132,16 @@ public:
         FILELockingByteWriter writer_;
         NativeCodesetEncoder  encoder_;
 
-        this(FILE* handle, ref NativeCodesetEncoder encoder)
+        this(FILE* handle, ref shared NativeCodesetEncoder encoder)
         {
-            writer_  = FILELockingByteWriter(handle);
-            encoder_ = assumeUnshared(encoder);
+            writer_ = FILELockingByteWriter(handle);
+
+            version (Windows)
+                // ConsoleCP might be changed dynamically.
+                encoder_ = NativeCodesetEncoder(ConversionMode.console);
+            else
+                // safe: We are in a critical section.
+                encoder_ = assumeUnshared(encoder);
         }
 
     public:
