@@ -27,9 +27,8 @@
 module std.internal.stdio.nativechar;
 
 import std.algorithm;
-import std.array;
 import std.exception;
-import std.range  : isInputRange, isOutputRange, ElementType;
+import std.range;
 import std.string : toStringz;
 import std.traits : isSomeString, isArray;
 import std.utf    : isValidDchar, stride, decode, decodeFront, putUTF;
@@ -83,6 +82,7 @@ private @safe struct NaiveCatenator(E)
     E[] data;
     void put(E e) { data ~= e; }
     void put(in E[] str) { data ~= str; }
+    @disable this(this) { assert(0); }
 }
 
 unittest
@@ -488,7 +488,7 @@ enum ConversionMode
      *    not form a valid native multibyte character.
      */
     ConversionStatus convertCharacter(Source, Sink)(ref Source source, ref Sink sink)
-            if (isOutputRange!(Sink, dchar))
+//          if (isOutputRange!(Sink, dchar))
     {
         return decoder_.convertCharacter(source, sink);
     }
@@ -563,7 +563,7 @@ static: // stateless
      *  - $(D UtfException) on invalid or incomplete UTF-8 sequence.
      */
     ConversionStatus convertCharacter(Source, Sink)(ref Source source, ref Sink sink)
-            if (isOutputRange!(Sink, dchar))
+//          if (isOutputRange!(Sink, dchar))
     {
         if (source.empty)
             return ConversionStatus.empty;
@@ -578,7 +578,7 @@ static: // stateless
         }
 
         immutable dchar c = decodeFront(ReType(&source));
-        sink.put(c);
+        put(sink, c);
         return ConversionStatus.ok;
     }
 }
@@ -709,7 +709,7 @@ private @system struct WindowsNativeCodesetDecoder
      *  - $(D Exception) on unexpected Windows API error.
      */
     ConversionStatus convertCharacter(Source, Sink)(ref Source source, ref Sink sink)
-            if (isOutputRange!(Sink, dchar))
+//          if (isOutputRange!(Sink, dchar))
     {
         // single/double-byte character sequence read from the source
         ubyte[2] mbcseq     = void;
@@ -775,7 +775,7 @@ private @system struct WindowsNativeCodesetDecoder
 
         // Write the corresponding UTF-32 sequence to the sink.
         foreach (dchar c; wchars)
-            sink.put(c);
+            put(sink, c);
 
         return ConversionStatus.ok;
     }
@@ -971,7 +971,7 @@ private @system struct IconvNativeCodesetDecoder
      *  - $(D ErrnoException) on unexpected iconv error.
      */
     ConversionStatus convertCharacter(Source, Sink)(ref Source source, ref Sink sink)
-            if (isOutputRange!(Sink, dchar))
+//          if (isOutputRange!(Sink, dchar))
     {
         // multibyte character sequence read from the source
         ubyte[16] mbcseqStack = void;
@@ -1047,7 +1047,7 @@ private @system struct IconvNativeCodesetDecoder
 
         // Write the resulting UTF-32 sequence to the sink.
         foreach (dchar c; uchars)
-            sink.put(c);
+            put(sink, c);
 
         return ConversionStatus.ok;
     }
@@ -1273,7 +1273,7 @@ version (HAVE_ICONV) unittest
      *  character offered by the system, or just dropped.
      */
     ConversionStatus convertChunk(Chunk, Sink)(Chunk chunk, ref Sink sink)
-            if (isSomeString!(Chunk) && isOutputRange!(Sink, ubyte[]))
+//          if (isSomeString!(Chunk) && isOutputRange!(Sink, ubyte[]))
     {
         return encoder_.convertChunk(chunk, sink);
     }
@@ -1376,7 +1376,7 @@ private @system struct WindowsNativeCodesetEncoder
      *  - $(D Exception) on unexpected Windows API failure.
      */
     ConversionStatus convertChunk(Sink)(in wchar[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, ubyte[]))
+//          if (isOutputRange!(Sink, ubyte[]))
     {
         if (chunk.length == 0)
             return ConversionStatus.empty;
@@ -1410,7 +1410,7 @@ private @system struct WindowsNativeCodesetEncoder
                 chunk.ptr, chunk.length, cast(LPSTR) mbstr.ptr, mbstr.length, null, null);
         enforce(mbstrLen > 0, sysErrorString(GetLastError()));
 
-        sink.put(mbstr[0 .. mbstrLen]);
+        put(sink, mbstr[0 .. mbstrLen]);
         return ConversionStatus.ok;
     }
 
@@ -1557,7 +1557,7 @@ private @system struct IconvNativeCodesetEncoder
      *  - $(D ErrnoExceptino) on unexpected iconv failure.
      */
     ConversionStatus convertChunk(Sink)(in char[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, ubyte[]))
+//          if (isOutputRange!(Sink, ubyte[]))
     {
         if (chunk.length == 0)
             return ConversionStatus.empty;
@@ -1578,7 +1578,7 @@ private @system struct IconvNativeCodesetEncoder
 
             // Output successfully converted characters (available even on error).
             if (dstLeft < mchars.length)
-                sink.put(mchars[0 .. $ - dstLeft]);
+                put(sink, mchars[0 .. $ - dstLeft]);
 
             if (rc == cast(size_t) -1)
             {
@@ -1676,22 +1676,23 @@ static:
     void reset() {}
 
     ConversionStatus convertChunk(Sink)(in char[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, char[]))
+//          if (isOutputRange!(Sink, char[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
         else
-            return sink.put(chunk), ConversionStatus.ok;
+            return put(sink, chunk), ConversionStatus.ok;
     }
 
     ConversionStatus convertChunk(Sink)(in wchar[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, char[]))
+//          if (isOutputRange!(Sink, char[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
         //
         char[BUFFER_SIZE] ustore = void;
         char[]            ubuf   = ustore;
+        size_t            upos   = 0;
 
         for (size_t i = 0; i < chunk.length; )
         {
@@ -1700,7 +1701,7 @@ static:
 
             if (ubuf.length < 4 || i == chunk.length)
             {
-                sink.put(ustore[0 .. $ - ubuf.length]);
+                put(sink, ustore[0 .. $ - ubuf.length]);
                 ubuf = ustore;
             }
         }
@@ -1708,7 +1709,7 @@ static:
     }
 
     ConversionStatus convertChunk(Sink)(in dchar[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, char[]))
+//          if (isOutputRange!(Sink, char[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
@@ -1723,7 +1724,7 @@ static:
 
             if (ubuf.length < 4 || i == chunk.length)
             {
-                sink.put(ustore[0 .. $ - ubuf.length]);
+                put(sink, ustore[0 .. $ - ubuf.length]);
                 ubuf = ustore;
             }
         }
@@ -1786,7 +1787,7 @@ static:
     void reset() {}
 
     ConversionStatus convertChunk(Sink)(in char[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, wchar[]))
+//          if (isOutputRange!(Sink, wchar[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
@@ -1801,7 +1802,7 @@ static:
 
             if (wbuf.length < 2 || i == chunk.length)
             {
-                sink.put(wstore[0 .. $ - wbuf.length]);
+                put(sink, wstore[0 .. $ - wbuf.length]);
                 wbuf = wstore;
             }
         }
@@ -1809,16 +1810,16 @@ static:
     }
 
     ConversionStatus convertChunk(Sink)(in wchar[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, wchar[]))
+//          if (isOutputRange!(Sink, wchar[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
         else
-            return sink.put(chunk), ConversionStatus.ok;
+            return put(sink, chunk), ConversionStatus.ok;
     }
 
     ConversionStatus convertChunk(Sink)(in dchar[] chunk, ref Sink sink)
-            if (isOutputRange!(Sink, wchar[]))
+//          if (isOutputRange!(Sink, wchar[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
@@ -1833,7 +1834,7 @@ static:
 
             if (wbuf.length < 2 || i == chunk.length)
             {
-                sink.put(wstore[0 .. $ - wbuf.length]);
+                put(sink, wstore[0 .. $ - wbuf.length]);
                 wbuf = wstore;
             }
         }
@@ -1895,12 +1896,12 @@ static:
     void reset() {}
 
     ConversionStatus convertChunk(Chunk, Sink)(Chunk chunk, ref Sink sink)
-            if (isOutputRange!(Sink, const ToE[]))
+//          if (isOutputRange!(Sink, const ToE[]))
     {
         if (chunk.empty)
             return ConversionStatus.empty;
         else
-            return sink.put(cast(const ToE[]) chunk), ConversionStatus.ok;
+            return put(sink, cast(const ToE[]) chunk), ConversionStatus.ok;
     }
 }
 

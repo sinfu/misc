@@ -74,6 +74,7 @@ void writefln(Format, Args...)(Format format, Args args)
 import std.array;
 import std.exception;
 import std.format;
+import std.traits;
 
 import std.internal.stdio.nativechar;
 
@@ -145,10 +146,14 @@ public:
         }
 
     public:
-        void put(in  char[] str) { encoder_.convertChunk(str, writer_); }
-        void put(in wchar[] str) { encoder_.convertChunk(str, writer_); }
-        void put(in dchar[] str) { encoder_.convertChunk(str, writer_); }
-        void put(dchar c) { put((&c)[0 .. 1]); }
+        void put(S)(S str) if (isSomeString!S)
+        {
+            encoder_.convertChunk(str, writer_);
+        }
+        void put(C = dchar)(dchar c) if (is(C == dchar))
+        {
+            put((&c)[0 .. 1]);
+        }
     }
 
 
@@ -159,7 +164,12 @@ public:
     {
         auto w = this.lockingTextWriter;
         foreach (i, Arg; Args)
-            formattedWrite(w, "%s", args[i]);
+        {
+            static if (__traits(compiles, w.put(args[i]) ))
+                w.put(args[i]);
+            else
+                formattedWrite(w, "%s", args[i]);
+        }
     }
 
     /// ditto

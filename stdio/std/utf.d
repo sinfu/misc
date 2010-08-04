@@ -1306,6 +1306,55 @@ ubyte codeLength(C)(dchar c)
 
 /* =================== Encode into Range ======================= */
 
+// For testing putUTF
+version (unittest) private @safe struct _NaiveCatenator(C)
+{
+    C[] data;
+    void put(C c) { data ~= c; }
+    @disable this(this) { assert(0); }
+
+    static assert(isOutputRange!(_NaiveCatenator, C));
+}
+
+/*
+ * std.range.put() doesn't deal with code-unit putting.
+ */
+private void putCodeUnit(C, R)(ref R r, C code)
+{
+    static if (is(R : const(C)[]))
+    {
+        r[0] = code;
+        r = r[1 .. $];
+    }
+    else
+    {
+        put(r, code);
+    }
+}
+
+unittest
+{
+    auto ubuf = new  char[](4);
+    auto wbuf = new wchar[](2);
+    auto dbuf = new dchar[](1);
+
+    auto ru = ubuf;
+    auto rw = wbuf;
+    auto rd = dbuf;
+    putCodeUnit(ru, cast( char)     0x40);
+    putCodeUnit(rw, cast(wchar)   0x3000);
+    putCodeUnit(rd, cast(dchar) 0x010000);
+
+    assert(ru.length == ubuf.length - 1);
+    assert(rw.length == wbuf.length - 1);
+    assert(rd.length == dbuf.length - 1);
+
+    assert(ubuf[0] ==     0x40);
+    assert(wbuf[0] ==   0x3000);
+    assert(dbuf[0] == 0x010000);
+}
+
+
 /**
  * Encodes one code point $(D c) into output range $(D r) using $(D C)
  * as a code unit.
@@ -1317,27 +1366,27 @@ void putUTF(C : char, R)(ref R r, dchar c)
 
     if (c < 0x80)
     {
-        r.put(cast(char) c);
+        putCodeUnit(r, cast(char) c);
     }
     else if (c < 0x0800)
     {
-        r.put(cast(char) (0b11000000 | (c >> 6        )));
-        r.put(cast(char) (0b10000000 | (c & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b11000000 | (c >> 6        )));
+        putCodeUnit(r, cast(char) (0b10000000 | (c & 0b00111111)));
     }
     else if (c < 0x10000)
     {
         if ((c & 0xF800) == 0xD800)
             throw new UtfException("encoding surrogate code point in UTF-8", c);
-        r.put(cast(char) (0b11100000 |  (c >> 12)              ));
-        r.put(cast(char) (0b10000000 | ((c >> 6 ) & 0b00111111)));
-        r.put(cast(char) (0b10000000 | ( c        & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b11100000 |  (c >> 12)              ));
+        putCodeUnit(r, cast(char) (0b10000000 | ((c >> 6 ) & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b10000000 | ( c        & 0b00111111)));
     }
     else if (c < 0x110000)
     {
-        r.put(cast(char) (0b11110000 | ( c >> 18)              ));
-        r.put(cast(char) (0b10000000 | ((c >> 12) & 0b00111111)));
-        r.put(cast(char) (0b10000000 | ((c >>  6) & 0b00111111)));
-        r.put(cast(char) (0b10000000 | ( c        & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b11110000 | ( c >> 18)              ));
+        putCodeUnit(r, cast(char) (0b10000000 | ((c >> 12) & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b10000000 | ((c >>  6) & 0b00111111)));
+        putCodeUnit(r, cast(char) (0b10000000 | ( c        & 0b00111111)));
     }
     else throw new UtfException("encoding invalid code point in UTF-8", c);
 }
@@ -1353,12 +1402,12 @@ void putUTF(C : wchar, R)(ref R r, dchar c)
         if ((c & 0x1F_F800) == 0x00_D800)
             throw new UtfException("encoding isolated surrogate code "
                     ~ "point in UTF-16", c);
-        r.put(cast(wchar) c);
+        putCodeUnit(r, cast(wchar) c);
     }
     else if (c < 0x110000)
     {
-        r.put(cast(wchar) ((((c - 0x10000) >> 10) & 0x3FF) + 0xD800));
-        r.put(cast(wchar) (( (c - 0x10000)        & 0x3FF) + 0xDC00));
+        putCodeUnit(r, cast(wchar) ((((c - 0x10000) >> 10) & 0x3FF) + 0xD800));
+        putCodeUnit(r, cast(wchar) (( (c - 0x10000)        & 0x3FF) + 0xDC00));
     }
     else throw new UtfException("encoding invalid code point in UTF-16", c);
 }
@@ -1371,7 +1420,7 @@ void putUTF(C : dchar, R)(ref R r, dchar c)
 
     if (!isValidDchar(c))
         throw new UtfException("encoding invalid code point in UTF-32", c);
-    r.put(c);
+    putCodeUnit(r, c);
 }
 
 unittest
@@ -1383,12 +1432,11 @@ unittest
     foreach (Char; TypeTuple!(char, wchar, dchar))
     {
         immutable(Char)[] witness = codepoints;
-        Char[64] store;
-        Char[]   buffer = store;
+        _NaiveCatenator!Char sink;
 
         foreach (dchar c; codepoints)
-            putUTF!Char(buffer, c);
-        assert(store[0 .. $ - buffer.length] == witness);
+            putUTF!Char(sink, c);
+        assert(sink.data == witness);
     }
 }
 
@@ -1401,12 +1449,12 @@ unittest
     ];
     foreach (c; wrong)
     {
-        auto ubuf = new  char[](4);
-        auto wbuf = new wchar[](2);
-        auto dbuf = new dchar[](1);
-        assert(expectError_( putUTF! char(ubuf, c) ));
-        assert(expectError_( putUTF!wchar(wbuf, c) ));
-        assert(expectError_( putUTF!dchar(dbuf, c) ));
+        _NaiveCatenator! char usink;
+        _NaiveCatenator!wchar wsink;
+        _NaiveCatenator!dchar dsink;
+        assert(expectError_( putUTF! char(usink, c) ));
+        assert(expectError_( putUTF!wchar(wsink, c) ));
+        assert(expectError_( putUTF!dchar(dsink, c) ));
     }
 }
 
