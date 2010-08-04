@@ -122,7 +122,7 @@ public:
      */
     @property LockingTextWriter lockingTextWriter() shared
     {
-        return LockingTextWriter(handle_, assumeUnshared(encoder_));
+        return LockingTextWriter(handle_, encoder_);
     }
 
     /// ditto
@@ -132,10 +132,10 @@ public:
         FILELockingByteWriter writer_;
         NativeCodesetEncoder  encoder_;
 
-        this(FILE* handle, NativeCodesetEncoder encoder)
+        this(FILE* handle, ref NativeCodesetEncoder encoder)
         {
             writer_  = FILELockingByteWriter(handle);
-            encoder_ = encoder;
+            encoder_ = assumeUnshared(encoder);
         }
 
     public:
