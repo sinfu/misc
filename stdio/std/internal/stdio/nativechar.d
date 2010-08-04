@@ -711,7 +711,7 @@ private @system struct WindowsNativeCodesetDecoder
     ConversionStatus convertCharacter(Source, Sink)(ref Source source, ref Sink sink)
             if (isOutputRange!(Sink, dchar))
     {
-        // double-byte character sequence read from the source
+        // single/double-byte character sequence read from the source
         ubyte[2] mbcseq     = void;
         size_t   mbcseqRead = 0;
 
@@ -722,6 +722,11 @@ private @system struct WindowsNativeCodesetDecoder
 
         if (IsDBCSLeadByteEx(codepage_, mbcseq[0]))
         {
+            // IsDBCSLeadByteEx() is just a necessary condition for lead-ness.
+            // Though false positive - mbcseq[0] being a trailing byte - means
+            // that the source starts with an illegal sequence, and it cannot
+            // be handled 'correctly' anyway.
+
             if (readNext(source, mbcseq[mbcseqRead]))
                 ++mbcseqRead;
             else
@@ -1376,6 +1381,7 @@ private @system struct WindowsNativeCodesetEncoder
         if (chunk.length == 0)
             return ConversionStatus.empty;
 
+        // Compute the length of the corresponding multibyte sequence.
         ubyte[128] mbstrStack = void;
         ubyte[]    mbstr      = mbstrStack;
         int        mbstrLen;    // size of the multibyte string
@@ -1399,6 +1405,7 @@ private @system struct WindowsNativeCodesetEncoder
         if (mbstr.length < mbstrLen)
             mbstr = new ubyte[](mbstrLen);
 
+        // Invalid input was handled on the previous 'dry run'.
         mbstrLen = WideCharToMultiByte(codepage_, 0,
                 chunk.ptr, chunk.length, cast(LPSTR) mbstr.ptr, mbstr.length, null, null);
         enforce(mbstrLen > 0, sysErrorString(GetLastError()));
