@@ -36,6 +36,7 @@ void main()
 
 shared File stdin, stdout, stderr;
 shared NativeTextIOPort stdinText, stdoutText, stderrText;
+shared   UTF8TextIOPort stdinUTF8, stdoutUTF8, stderrUTF8;
 
 shared static this()
 {
@@ -47,6 +48,10 @@ shared static this()
     assumeUnshared( stdinText) = NativeTextIOPort(assumeUnshared(stdin ));
     assumeUnshared(stdoutText) = NativeTextIOPort(assumeUnshared(stdout));
     assumeUnshared(stderrText) = NativeTextIOPort(assumeUnshared(stderr));
+
+    assumeUnshared( stdinUTF8) = UTF8TextIOPort(assumeUnshared(stdin ));
+    assumeUnshared(stdoutUTF8) = UTF8TextIOPort(assumeUnshared(stdout));
+    assumeUnshared(stderrUTF8) = UTF8TextIOPort(assumeUnshared(stderr));
 }
 
 
@@ -82,7 +87,7 @@ void writefln(Format, Args...)(Format format, Args args)
 //----------------------------------------------------------------------------//
 // struct NativeTextIOPort
 // {
-//     this(shared File file);
+//     this(File file);
 //
 // shared:
 //     @property LockingTextWriter lockingTextWriter();
@@ -92,7 +97,8 @@ void writefln(Format, Args...)(Format format, Args args)
 //     void writefln(format, args...);
 //
 //     @property LockingTextReader lockingTextReader();
-//     string readln(dchar terminator);
+//     String readln(dchar terminator);
+//     size_t readln(ref Char[], dchar terminator);
 // }
 //----------------------------------------------------------------------------//
 
@@ -125,7 +131,7 @@ public:
     this(File file)
     {
         // Construct transcoders.
-        immutable convMode = determineConversionMode(file);
+        immutable convMode = determineConversionMode(file.handle);
         encoder_ = NativeCodesetEncoder(convMode);
         decoder_ = NativeCodesetDecoder(convMode);
 
@@ -136,10 +142,8 @@ public:
     /*
      * Returns the relevant $(D ConversionMode) for a given $(D file).
      */
-    private static ConversionMode determineConversionMode(ref File file)
+    private static ConversionMode determineConversionMode(FILE* handle)
     {
-        auto handle = file.handle;
-
         if (handle is core.stdc.stdio.stdin  ||
             handle is core.stdc.stdio.stdout ||
             handle is core.stdc.stdio.stderr )
@@ -464,6 +468,414 @@ public:
     }
 }
 
+
+//----------------------------------------------------------------------------//
+// UTF8TextIOPort
+//----------------------------------------------------------------------------//
+// struct UTF8TextIOPort
+// {
+//     this(File file);
+//
+// shared:
+//     @property LockingTextWriter lockingTextWriter();
+//     void write   (        args...);
+//     void writeln (        args...);
+//     void writef  (format, args...);
+//     void writefln(format, args...);
+//
+//     @property LockingTextReader lockingTextReader();
+//     String readln(dchar terminator);
+//     size_t readln(ref Char[], dchar terminator);
+// }
+//----------------------------------------------------------------------------//
+
+/**
+ * Object for writing Unicode text to a $(D File) in UTF-8 encoding.
+ */
+@system struct UTF8TextIOPort
+{
+private:
+    File file_;
+
+public:
+    //----------------------------------------------------------------//
+    // Constructor
+    //----------------------------------------------------------------//
+
+    /**
+     * Constructs a $(D UTF8TextIOPort) on an open $(D File).
+     *
+     * Params:
+     *  file = An open $(D File) to perform UTF-8 text I/O on.
+     */
+    this(File file)
+    {
+        file_ = file;
+    }
+
+
+    //----------------------------------------------------------------//
+    // Transcoded text writing capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an output range for writing text to a locked file stream in
+     * the UTF-8 encoding.
+     */
+    @property LockingTextWriter lockingTextWriter()
+    {
+        return assumeShared(this).lockingTextWriter;
+    }
+
+    /// ditto
+    @property LockingTextWriter lockingTextWriter() shared
+    {
+        return LockingTextWriter(file_);
+    }
+
+    /// ditto
+    static struct LockingTextWriter
+    {
+    private:
+        FILELockingByteWriter byteWriter_;
+        FILELockingWideWriter wideWriter_;
+        int                   orientation_;
+        File                  reference_;
+
+        /**
+         * Constructs a $(D LockingTextWriter) object on an open $(D file).
+         */
+        this(ref shared File file)
+        {
+            auto handle = file.handle;
+
+            // We have to deal with the stream orientation.
+            orientation_ = core.stdc.wchar_.fwide(handle, 0);
+
+            if (orientation_ <= 0)
+                byteWriter_ = FILELockingByteWriter(handle);
+            else
+                wideWriter_ = FILELockingWideWriter(handle);
+
+            // SAFE: We are in the critical section.
+            reference_ = assumeUnshared(file);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Range primitive implementations.
+        //----------------------------------------------------------------//
+
+        /**
+         * Writes a UTF string $(D str) to the file stream in UTF-8 encoding.
+         */
+        void put(String)(String str)
+            if (isSomeString!(String))
+        {
+            if (is(String : const(char)[]) && orientation_ <= 0)
+            {
+                // Write UTF-8 string directly to the stream.
+                byteWriter_.put(cast(const ubyte[]) str);
+            }
+            else
+            {
+                // Put each character in turn.
+                foreach (dchar c; str)
+                    this.put(c);
+            }
+        }
+
+
+        /**
+         * Writes a Unicode code point $(D c) to the stream in UTF-8 encoding.
+         */
+        void put(Char = dchar)(dchar c)
+            if (is(Char == dchar))
+        {
+            if (orientation <= 0)
+            {
+                assert(byteWriter_ != byteWriter_.init);
+
+                if (c <= 0x7F)
+                {
+                    // Simplest case: single ASCII character.
+                    byteWriter_.put(cast(ubyte) c);
+                }
+                else
+                {
+                    // Encode to UTF-8 and write each code unit.
+                    char[4] buffer = void;
+                    size_t  stride = std.utf.encode(buf, c);
+
+                    foreach (u; buffer[0 .. stride])
+                        byteWriter_.put(cast(ubyte) u);
+                }
+            }
+            else
+            {
+                // The stream orientation is wide.  Write the code point
+                // directly as a wide character if wchar_t is UCS-2/4.
+                assert(wideWriter_ != wideWriter_.init);
+
+                static if (is(wchar_t == wchar))
+                {
+                    if (c <= 0xFFFF)
+                    {
+                        // Simple UCS-2 character.
+                        wideWriter_.put(cast(wchar_t) c);
+                    }
+                    else
+                    {
+                        // Deal with UTF-16 surrogate pair.
+                        immutable wchar_t
+                            a = (((c - 0x10000) >> 10) & 0x3FF) + 0xD800,
+                            b = ( (c - 0x10000)        & 0x3FF) + 0xDC00;
+                        wideWriter_.put(a);
+                        wideWriter_.put(b);
+                    }
+                }
+                else static if (is(wchar_t == dchar))
+                {
+                    wideWriter_.put(c);
+                }
+                else
+                {
+                    assert(0, "not supported");
+                }
+            }
+        }
+    }
+
+
+    /**
+     * Writes formatted arguments $(D args) to the thread-locked stream.
+     */
+    void write(Args...)(Args args) shared
+    {
+        auto writer = this.lockingTextWriter;
+
+        foreach (i, Arg; Args)
+        {
+            static if (__traits(compiles, writer.put(args[i]) ))
+                writer.put(args[i]);
+            else
+                std.format.formattedWrite(writer, "%s", args[i]);
+        }
+    }
+
+    /// ditto
+    void writeln(Args...)(Args args) shared
+    {
+        write(args, '\n');
+    }
+
+    /// ditto
+    void writef(Format, Args...)(Format format, Args args) shared
+    {
+        auto writer = this.lockingTextWriter;
+
+        std.format.formattedWrite(writer, format, args);
+    }
+
+    /// ditto
+    void writefln(Format, Args...)(Format format, Args args) shared
+    {
+        auto writer = this.lockingTextWriter;
+
+        std.format.formattedWrite(writer, format, args);
+        writer.put('\n');
+    }
+
+
+    //----------------------------------------------------------------//
+    // Transcoded text reading capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an output range for reading text from a locked file stream in
+     * the native character encoding.
+     */
+    @property LockingTextReader lockingTextReader()
+    {
+        return assumeShared(this).lockingTextReader;
+    }
+
+    /// ditto
+    @property LockingTextReader lockingTextReader() shared
+    {
+        return LockingTextReader(file_);
+    }
+
+    /// ditto
+    static struct LockingTextReader
+    {
+    private:
+        FILELockingByteReader byteReader_;
+        FILELockingWideReader wideReader_;
+        int                   orientation_;
+        State*                state_;
+        File                  reference_;
+
+        static struct State
+        {
+            dchar front;
+            bool  empty;
+            bool  wantNext = true;
+        }
+
+
+        /*
+         * Constructs a $(D LockingTextReader) object.
+         */
+        this(ref shared File file)
+        {
+            state_ = new State;
+
+            // We shall deal with the stream orientation.
+            auto  handle = file.handle;
+            orientation_ = core.stdc.wchar_.fwide(handle, 0);
+
+            if (orientation_ <= 0)
+                byteReader_ = FILELockingByteReader(handle);
+            else
+                wideReader_ = FILELockingWideReader(handle);
+
+            // SAFE: We are in the critical section.
+            reference_ = assumeUnshared(file);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        /*
+         * Returns $(D true) iff the underlying stream offeres no more
+         * characters.
+         */
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        /*
+         * Returns the character at the current position of the stream.
+         */
+        @property dchar front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.front;
+        }
+
+
+        /*
+         * Drops the cached $(D front) character.  Next access to the
+         * $(D empty) or $(D front) will fetch the next character.
+         */
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetch the next character into $(D state_.front).  $(D state_.empty)
+         * is set to $(D true) if the stream offers no more character.
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert(state_.wantNext);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            if (orientation_ <= 0)
+            {
+                // Stream is byte oriented.
+                assert(byteReader_ != byteReader_.init);
+
+                // Decode UTF-8 sequence.
+                if (byteReader_.empty)
+                    state_.empty = true;
+                else
+                    state_.front = decodeFront(byteReader_);
+            }
+            else
+            {
+                // Stream is wide oriented.
+                assert(wideReader_ != wideReader_.init);
+
+                static if (is(wchar_t == wchar) || is(wchar_t == dchar))
+                {
+                    if (wideReader_.empty)
+                        state_.empty = true;
+                    else
+                        state_.front = decodeFront(wideReader_);
+                }
+                else
+                {
+                    assert(0, "not supported");
+                }
+            }
+        }
+    }
+
+
+    // NOTE: efficient std.stdio readlnImpl() could be used.
+
+    /**
+     * Reads one line from the stream.
+     */
+    String readln(String = string)(dchar terminator = '\n') shared
+        if (isSomeString!(String))
+    {
+        char[] buffer;
+
+        buffer = buffer[0 .. readln(buffer, terminator)];
+        return assumeUnique(buffer);
+    }
+
+    /// ditto
+    size_t readln(Char)(ref Char[] buffer, dchar terminator = '\n') shared
+        if (isSomeChar!(Char))
+    {
+        auto writer = appender(&buffer);
+
+        foreach (dchar c; this.lockingTextReader)
+        {
+            putUTF!Char(writer, c);
+            if (c == terminator)
+                break;
+        }
+        return writer.data.length;
+    }
+}
 
 
 //----------------------------------------------------------------------------//

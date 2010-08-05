@@ -550,7 +550,7 @@ version (unittest) private @safe struct _BidiCodeUnits(S : C[], C)
  * character and the shortened range.
  */
 dchar decodeFront(Range)(ref Range r)
-    if (is(Unqual!(ElementType!Range) == char))
+    if (is(Unqual!(ElementType!Range) : char))
 in
 {
     assert(!r.empty);
