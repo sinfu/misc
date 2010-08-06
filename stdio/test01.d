@@ -45,29 +45,51 @@ void writefln(Format, Args...)(Format format, Args args)
 
 
 //----------------------------------------------------------------------------//
-// StandardOutput
+// TranscodedFile
 //----------------------------------------------------------------------------//
-// shared StandardOutput stdout;
+// shared TranscodedFile stdin, stdout, stderr;
 //
-// struct StandardOutput
+// struct TranscodedFile
 // {
 // shared:
-//     // Text writing capabilities
-//     @property LockingTextWriter lockingTextWriter();
+//     @property FILE*   handle();
+//     @property int     fileno();
 //
+//     @property bool    isOpen();
+//     @property bool    eof();
+//     void              open(name, openMode);
+//     void              close();
+//
+//     @property bool    error();
+//     void              clearerr();
+//
+//     void              flush();
+//     void              setvbuf(  size, mode);
+//     void              setvbuf(buffer, mode);
+//
+//     fpos_t            seek(offset, origin);
+//     fpos_t            tell();
+//     void              rewind();
+//
+//     //---- Binary I/O ----
+//     @property ByByte  byByte();
+//               ByChunk byChunk(chunkSize);
+//     T rawRead(buffer);
+//
+//     @property LockingBinaryWriter binaryWriter();
+//     void rawWrite(data);
+//
+//     //---- Transcoded text I/O ----
+//     @property ByDchar byDchar();
+//               ByLine  byLine(terminator);
+//     string            readln(terminator);
+//     size_t            readln(buffer, terminator);
+//
+//     @property LockingTextWriter lockingTextWriter();
 //     void write   (        args...);
 //     void writeln (        args...);
 //     void writef  (format, args...);
 //     void writefln(format, args...);
-//
-//     // Binary writing capability
-//     void rawWrite(T)(in T[] data);
-//
-//     // FILE interfaces
-//     @property FILE* handle();
-//     void flush();
-//     bool error();
-//     void clearerr();
 // }
 //----------------------------------------------------------------------------//
 
@@ -78,52 +100,618 @@ import std.traits;
 
 import std.internal.stdio.nativechar;
 
+import core.atomic;
+
 import core.stdc.errno;
 import core.stdc.stdio;
 import core.stdc.wchar_;
 
 
-/**
- * Standard output handle synchronized with C stdio functions.
- */
-shared StandardOutput stdout;
-
-shared static this()
+private @trusted T atomicLoad(T)(const ref shared T val)
 {
-    assumeUnshared(.stdout) = StandardOutput(core.stdc.stdio.stdout);
+    return atomicOp!("|=", T, T)(val, 0);
 }
 
 
 /**
- * Object for writing Unicode text to the standard output in console-safe
- * system encoding.
+ * Standard streams synchronized with C stdio functions.
  */
-@system struct StandardOutput
+shared TranscodedFile stdin, stdout, stderr;
+
+shared static this()
+{
+    assumeUnshared(.stdin ) = TranscodedFile(core.stdc.stdio.stdin );
+    assumeUnshared(.stdout) = TranscodedFile(core.stdc.stdio.stdout);
+    assumeUnshared(.stderr) = TranscodedFile(core.stdc.stdio.stderr);
+}
+
+
+/**
+ * $(D TranscodedFile) is the same as $(D File) except that text I/O is
+ * performed with character encoding conversion.
+ */
+@system struct TranscodedFile
 {
 private:
-    FILE*                handle_;
-    NativeCodesetEncoder encoder_;
-
-    this(FILE* handle)
+    struct Impl
     {
-        handle_  = handle;
-        encoder_ = NativeCodesetEncoder(ConversionMode.console);
+        FILE*  handle;
+        string name;
+        int    refCount = -1;
     }
-    // MSDN says that standard streams should use a console code page anyway:
-    //   http://msdn.microsoft.com/en-us/goglobal/bb688114.aspx
+    Impl* impl;
+    NativeCodesetDecoder decoder_;
+    NativeCodesetEncoder encoder_;
 
 public:
     //----------------------------------------------------------------//
-    // Transcoded Text Writing Capabilities
+    // Constructor
     //----------------------------------------------------------------//
 
     /**
-     * Returns an output range for writing text to a locked standard stream
-     * in the console-safe character encoding.
+     *
      */
+    this(string name, in char[] openMode)
+    {
+        open(name, openMode);
+    }
+
+
+    /**
+     *
+     */
+    this(FILE* handle, bool own = false)
+    {
+        // Construct transcoders.
+        immutable convMode = determineConversionMode(handle);
+        encoder_ = NativeCodesetEncoder(convMode);
+        decoder_ = NativeCodesetDecoder(convMode);
+
+        impl          = new Impl;
+        impl.handle   = handle;
+        impl.refCount = (own ? 1 : -1);
+    }
+
+
+    /*
+     * Returns the relevant $(D ConversionMode) for a given $(D file).
+     */
+    private static ConversionMode determineConversionMode(FILE* handle)
+    {
+        if (handle is core.stdc.stdio.stdin  ||
+            handle is core.stdc.stdio.stdout ||
+            handle is core.stdc.stdio.stderr )
+            // File is a standard stream.  Text should be encoded in system's
+            // console encoding regardless of whether the stream is redirected.
+            return ConversionMode.console;
+        else
+            // It's a file; use user's native codeset.
+            return ConversionMode.native;
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE resource management
+    //----------------------------------------------------------------//
+
+    /*
+     * Copy constructor atomically increments the internal reference counter
+     * iff the $(D File) object is owning the underlying $(D FILE*) handle.
+     */
+    this(this) //shared
+    {
+        if (auto p = cast(shared) impl)
+        {
+            if (atomicLoad(p.refCount) > 0)
+                atomicOp!"+="(p.refCount, 1);
+        }
+    }
+
+
+    /*
+     * Destructor atomically decrements the internal reference counter iff
+     * the $(D File) object is owning the underlying $(D FILE*) handle; and
+     * closes the $(D FILE*) handle if the reference count becomes zero.
+     */
+    ~this() //shared
+    {
+        if (auto p = cast(shared) impl)
+        {
+            if (atomicLoad(p.refCount) > 0)
+            {
+                if (atomicOp!"-="(p.refCount, 1) == 0)
+                    close();
+            }
+        }
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: handle and fd
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns the underlying $(D FILE*) object.
+     */
+    @property FILE* handle()
+    {
+        return impl.handle;
+    }
+
+    /// ditto
+    @property FILE* handle() shared
+    {
+        return impl.handle;
+    }
+
+
+    /**
+     * .
+     */
+    @property int fileno()
+    {
+        auto handle = impl.handle;
+
+        return core.stdc.stdio.fileno(handle);
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: open/close
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns $(D true) iff the underlying file is open.
+     */
+    @property bool isOpen()
+    {
+        return impl && impl.handle;
+    }
+
+    /// ditto
+    @property bool isOpen() shared
+    {
+        return impl && impl.handle;
+    }
+
+
+    /**
+     *
+     */
+    @property bool eof() shared
+    {
+        return core.stdc.stdio.feof(impl.handle) != 0;
+    }
+
+
+    /**
+     *
+     */
+    void open(string path, in char[] openMode)
+    {
+        assert(0, "not implemented");
+    }
+
+
+    /**
+     * Closes the underlying file object.
+     */
+    void close()
+    {
+        if (core.stdc.stdio.fclose(impl.handle) == -1)
+        {
+            switch (errno)
+            {
+              default:
+                throw new Exception("");
+            }
+            assert(0);
+        }
+
+        *impl = (*impl).init;
+         impl =   impl .init;
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: error
+    //----------------------------------------------------------------//
+
+    /**
+     *
+     */
+    @property bool error()
+    {
+        auto handle = impl.handle;
+
+        return core.stdc.stdio.ferror(handle) != 0;
+    }
+
+
+    /**
+     *
+     */
+    void clearerr()
+    {
+        auto handle = impl.handle;
+
+        core.stdc.stdio.clearerr(handle);
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: buffering
+    //----------------------------------------------------------------//
+
+    /**
+     * .
+     */
+    void flush()
+    {
+        auto handle = impl.handle;
+
+        while (core.stdc.stdio.fflush(handle) == EOF)
+        {
+            switch (errno)
+            {
+              case EINTR:
+                continue;
+
+              default:
+                throw new Exception("");
+            }
+            assert(0);
+        }
+    }
+
+
+    /**
+     * .
+     */
+    void setvbuf(size_t size, int mode = 0)
+    {
+        auto handle = impl.handle;
+
+        core.stdc.stdio.setvbuf(handle, null, mode, size);
+    }
+
+
+    /**
+     * .
+     */
+    void setvbuf(void[] buffer, int mode = 0)
+    {
+        auto handle = impl.handle;
+
+        core.stdc.stdio.setvbuf(
+                handle, cast(char*) buffer.ptr, mode, buffer.length);
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: seek
+    //----------------------------------------------------------------//
+
+    /**
+     *
+     */
+    fpos_t seek(fpos_t offset, int origin = SEEK_SET)
+    {
+        return core.stdc.stdio.fseek(impl.handle, offset, origin);
+    }
+
+
+    /**
+     *
+     */
+    fpos_t tell()
+    {
+        return core.stdc.stdio.ftell(impl.handle);
+    }
+
+
+    /**
+     *
+     */
+    void rewind()
+    {
+        core.stdc.stdio.rewind(impl.handle);
+    }
+
+
+    //----------------------------------------------------------------//
+    // Raw binary writing capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an output range for writing binary data to a locked file stream.
+     */
+    @property LockingBinaryWriter binaryWriter() shared
+    {
+        return LockingBinaryWriter(this);
+    }
+
+    /// ditto
+    static struct LockingBinaryWriter
+    {
+    private:
+        FILELocker       locker_;
+        FILEBinmodeScope binmode_;
+//      TranscodedFile   reference_;    @@@ linker error
+
+        this(ref shared TranscodedFile file)
+        in
+        {
+            assert(file.isOpen);
+            assert(core.stdc.wchar_.fwide(file.handle, 0) <= 0);
+        }
+        body
+        {
+            locker_    = FILELocker(file.handle);
+            binmode_   = FILEBinmodeScope(file.handle);
+//          reference_ = assumeUnshared(file);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Range primitive implementations.
+        //----------------------------------------------------------------//
+
+        /**
+         * Writes entire $(D data), an array of $(D E)s, to the stream.
+         */
+        void put(T : E[], E)(T data)
+        {
+            for (E[] rest = data; !rest.empty; )
+            {
+                immutable size_t consumed =
+                    core.stdc.stdio.fwrite(
+                            rest.ptr, E.sizeof, rest.length, locker_.handle);
+
+                if (consumed < rest.length)
+                    rest = rest[consumed .. $];
+                else
+                    break;
+
+                if (core.stdc.stdio.ferror(locker_.handle))
+                {
+                    switch (errno)
+                    {
+                      case EINTR:
+                        core.stdc.stdio.clearerr(locker_.handle);
+                        continue;
+
+                      default:
+                        throw new ErrnoException("");
+                    }
+                    assert(0);
+                }
+            }
+        }
+
+
+        /**
+         * Writes a value $(D datum) to the stream.
+         */
+        void put(T)(T datum)
+        {
+            this.put( (&datum)[0 .. 1] );
+        }
+    }
+
+
+    /**
+     *
+     */
+    void rawWrite(T)(T data)
+    {
+        auto writer = this.binaryWriter;
+
+        writer.put(data);
+    }
+
+
+    //----------------------------------------------------------------//
+    // Raw binary reading capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an input range for reading raw $(D ubyte)s from the file stream.
+     */
+    @property LockingByteReader byByte() shared
+    {
+        return LockingByteReader(this);
+    }
+
+    /// ditto
+    static struct LockingByteReader
+    {
+    private:
+        FILELockingByteReader reader_;
+        FILEBinmodeScope      binmode_;
+//      TranscodedFile        reference_;   @@@ linker error
+
+        this(ref shared TranscodedFile file)
+        {
+            auto handle = file.handle;
+
+            reader_    = FILELockingByteReader(handle);
+            binmode_   = FILEBinmodeScope(handle);
+//          reference_ = assumeUnshared(file);
+        }
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        {
+            return reader_.empty;
+        }
+
+        @property ubyte front()
+        {
+            return reader_.front;
+        }
+
+        void popFront()
+        {
+            reader_.popFront();
+        }
+    }
+
+
+    /**
+     * Returns an input range for reading raw $(D ubyte)s from the file stream
+     * by chunk of fixed size $(D chunkSize).
+     */
+    LockingChunkReader byChunk(size_t chunkSize = 8192) shared
+    {
+        enforce(chunkSize > 0);
+        return LockingChunkReader(this, chunkSize);
+    }
+
+    /// ditto
+    static struct LockingChunkReader
+    {
+    private:
+        FILELocker       locker_;
+        ubyte[]          buffer_;
+        State*           state_;
+//      TranscodedFile   reference_;    @@@ linker error
+        FILEBinmodeScope binmode_;
+
+        static struct State
+        {
+            bool empty;
+            bool wantNext = true;
+        }
+
+        this(ref shared TranscodedFile file, size_t chunkSize)
+        in
+        {
+            assert(file.isOpen);
+            assert(core.stdc.wchar_.fwide(file.handle, 0) <= 0);
+            assert(chunkSize > 0);
+        }
+        body
+        {
+            state_  = new State;
+            buffer_ = new ubyte[](chunkSize);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        @property ubyte[] front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return buffer_;
+        }
+
+
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetches the next chunk (if any) into $(D buffer_).
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert(state_.wantNext);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            for (ubyte[] rem = buffer_; !rem.empty; )
+            {
+                immutable size_t consumed =
+                    core.stdc.stdio.fread(
+                            rem.ptr, 1, rem.length, locker_.handle);
+
+                if (consumed < rem.length)
+                    rem = rem[consumed .. $];
+                else
+                    break;
+
+                if (core.stdc.stdio.feof(locker_.handle))
+                {
+                    buffer_      = buffer_[0 .. $ - rem.length];
+                    state_.empty = buffer_.empty;
+                    break;
+                }
+                else if (core.stdc.stdio.ferror(locker_.handle))
+                {
+                    switch (errno)
+                    {
+                      case EINTR:
+                        core.stdc.stdio.clearerr(locker_.handle);
+                        continue;
+
+                      default:
+                        throw new ErrnoException("");
+                    }
+                    assert(0);
+                }
+            }
+        }
+    }
+
+
+    //----------------------------------------------------------------//
+    // Transcoded text writing capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an output range for writing text to a locked file stream in
+     * the native character encoding.
+     */
+    @property LockingTextWriter lockingTextWriter()
+    {
+        return assumeShared(this).lockingTextWriter;
+    }
+
+    /// ditto
     @property LockingTextWriter lockingTextWriter() shared
     {
-        return LockingTextWriter(handle_, encoder_);
+        return LockingTextWriter(this, encoder_);
     }
 
     /// ditto
@@ -132,25 +720,45 @@ public:
     private:
         FILELockingByteWriter writer_;
         NativeCodesetEncoder  encoder_;
+//      TranscodedFile        reference_;   @@@ linker error
 
-        this(FILE* handle, ref shared NativeCodesetEncoder encoder)
+        // The TranscodedFile object where I/O is performed is holded in this
+        // range object so that reference counting correctly works.
+
+        this(ref shared TranscodedFile file,
+             ref shared NativeCodesetEncoder encoder)
         {
-            writer_ = FILELockingByteWriter(handle);
+            // Enter a critical section.
+            writer_ = FILELockingByteWriter(file.handle);
 
-            version (Windows)
-                // ConsoleCP might be changed dynamically.
-                encoder_ = NativeCodesetEncoder(ConversionMode.console);
-            else
-                // safe: We are in a critical section.
-                encoder_ = assumeUnshared(encoder);
+            // SAFE: We are in the critical section.
+            encoder_   = assumeUnshared(encoder);
+//          reference_ = assumeUnshared(file);
         }
 
+
     public:
-        void put(S)(S str) if (isSomeString!S)
+        //----------------------------------------------------------------//
+        // Output range primitives
+        //----------------------------------------------------------------//
+
+        /**
+         * Writes a UTF string $(D str) to the file stream in the native
+         * character encoding.
+         */
+        void put(S)(S str)
+            if (isSomeString!(S))
         {
             encoder_.convertChunk(str, writer_);
         }
-        void put(C = dchar)(dchar c) if (is(C == dchar))
+
+
+        /**
+         * Writes a Unicode code point $(D c) to the file stream in the native
+         * character encoding.
+         */
+        void put(C = dchar)(dchar c)
+            if (is(C == dchar))
         {
             put((&c)[0 .. 1]);
         }
@@ -158,17 +766,18 @@ public:
 
 
     /**
-     * Formatted writing to the stream.
+     * Writes formatted arguments $(D args) to the thread-locked stream.
      */
     void write(Args...)(Args args) shared
     {
-        auto w = this.lockingTextWriter;
+        auto writer = this.lockingTextWriter;
+
         foreach (i, Arg; Args)
         {
-            static if (__traits(compiles, w.put(args[i]) ))
-                w.put(args[i]);
+            static if (isSomeString!(Arg) || is(Arg == dchar))
+                writer.put(args[i]);
             else
-                formattedWrite(w, "%s", args[i]);
+                std.format.formattedWrite(writer, "%s", args[i]);
         }
     }
 
@@ -181,83 +790,335 @@ public:
     /// ditto
     void writef(Format, Args...)(Format format, Args args) shared
     {
-        auto w = this.lockingTextWriter;
-        formattedWrite(w, format, args);
+        auto writer = this.lockingTextWriter;
+
+        std.format.formattedWrite(writer, format, args);
     }
 
     /// ditto
     void writefln(Format, Args...)(Format format, Args args) shared
     {
-        auto w = this.lockingTextWriter;
-        formattedWrite(w, format, args);
-        w.put('\n');
+        auto writer = this.lockingTextWriter;
+
+        std.format.formattedWrite(writer, format, args);
+        writer.put('\n');
     }
 
 
     //----------------------------------------------------------------//
-    // Raw Binary Writing Capability
+    // Transcoded text reading capabilities
     //----------------------------------------------------------------//
 
     /**
-     * Writes $(D buffer) to the file.
+     * Returns an input range for reading $(D dchar)s decoded from a locked
+     * file stream in the native character encoding.
      */
-    void rawWrite(T)(in T[] buffer) shared
+    @property ByDchar byDchar()
     {
-        auto locker   = FILELocker(handle_);
-        auto binscope = FILEBinmodeScope(handle_);
+        return assumeShared(this).byDchar;
+    }
 
-        for (const(E)[] rest = buffer; !rest.empty; )
+    /// ditto
+    @property ByDchar byDchar() shared
+    {
+        return ByDchar(this, decoder_);
+    }
+
+    /// ditto
+    static struct ByDchar
+    {
+    private:
+        FILELockingByteReader reader_;
+        NativeCodesetDecoder  decoder_;
+//      TranscodedFile        reference_;   @@@ linker error
+        State*                state_;
+
+        static struct State
         {
-            immutable size_t consumed =
-                fwrite(rest.ptr, T.sizeof, rest.length, locker.handle) / T.sizeof;
+            dchar front;
+            bool  empty;
+            bool  wantNext = true;
+        }
 
-            if (consumed < rest.length)
-                rest = rest[consumed .. $];
-            else
+        this(ref shared TranscodedFile file,
+             ref shared NativeCodesetDecoder decoder)
+        {
+            state_ = new State;
+
+            // Enter a critical section.
+            reader_ = FILELockingByteReader(file.handle);
+
+            // SAFE: We are in the critical section.
+            decoder_   = assumeUnshared(decoder);
+//          reference_ = assumeUnshared(file);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        /*
+         * Returns $(D true) iff the underlying stream offeres no more
+         * characters.
+         */
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        /*
+         * Returns the character at the current position of the stream.
+         */
+        @property dchar front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.front;
+        }
+
+
+        /*
+         * Drops the cached $(D front) character.  Next access to the
+         * $(D empty) or $(D front) will fetch the next character.
+         */
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetch the next character into $(D state_.front).  $(D state_.empty)
+         * is set to $(D true) if the stream offers no more character.
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert(state_.wantNext);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            // Reader shall use a dchar (if any) in IOPort's pushback buffer.
+            if (false)
+            {
+                assert(0, "not implemented");
+                state_.front = dchar.init;
+                return;
+            }
+            assert(1, "pushback buffer must be empty");
+
+            // Receiver receives converted dchars from the decoder.
+            //
+            // Note that a character may be represented in multiple dchars,
+            // and thus put() may be called multiple times.  In such case
+            // Receiver pushes 'extra' code points to IOPort's pushback
+            // buffer. [TODO]
+            static struct Receiver
+            {
+                State* state_;
+
+                void put(dchar c)
+                in
+                {
+                    assert(state_ != null);
+                }
+                body
+                {
+                    state_.front = c;
+                }
+            }
+            auto receiver = Receiver(state_);
+
+            final switch (decoder_.convertCharacter(reader_, receiver))
+            {
+              case ConversionStatus.ok:
                 break;
 
-            if (.ferror(locker.handle))
-            {
-                switch (errno)
-                {
-                  case EINTR:
-                    .clearerr(locker.handle);
-                    continue;
-
-                  default:
-                    throw new ErrnoException("");
-                }
-                assert(0);
+              case ConversionStatus.empty:
+                state_.empty = true;
+                break;
             }
         }
     }
 
 
-    //----------------------------------------------------------------//
-    // FILE Interface
-    //----------------------------------------------------------------//
+    /**
+     * Reads one line from the stream.
+     */
+    String readln(String = string)(dchar terminator = '\n') shared
+        if (isSomeString!(String))
+    {
+        char[] buffer;
+
+        buffer = buffer[0 .. readln(buffer, terminator)];
+        return assumeUnique(buffer);
+    }
+
+    /// ditto
+    size_t readln(Char)(ref Char[] buffer, dchar terminator = '\n') shared
+        if (isSomeChar!(Char))
+    {
+        buffer.length = 0;
+
+        auto reader = this.byDchar;
+        auto writer = appender(&buffer);
+        assert(writer.data.empty);
+
+        while (!reader.empty)
+        {
+            immutable dchar c = reader.front;
+            reader.popFront();
+
+            putUTF!Char(writer, c);
+            if (c == terminator)
+                break;
+        }
+        return writer.data.length;
+    }
+
 
     /**
-     * Returns a $(D FILE*) for C stdio.
+     * Returns an input range for reading text by line.
      */
-    @property FILE* handle() shared nothrow
+    ByLine byLine(dchar terminator = '\n') shared
     {
-        return handle_;
+        return ByLine(this.byDchar, terminator);
     }
 
-    void flush() shared
+    /// ditto
+    static struct ByLine
     {
-        .fflush(handle_);
-    }
+    private:
+        ByDchar reader_;
+        dchar   terminator_;
+        State*  state_;
 
-    bool error() shared
-    {
-        return .ferror(handle_) != 0;
-    }
+        static struct State
+        {
+            char[] buffer;
+            bool   empty;
+            bool   wantNext = true;
+        }
 
-    void clearerr() shared
-    {
-        .clearerr(handle_);
+        this(ByDchar reader, dchar terminator)
+        {
+            enum size_t BUFFER_SIZE = 80;
+
+            state_        = new State;
+            state_.buffer = new char[](BUFFER_SIZE);
+            terminator_   = terminator;
+            reader_       = reader;
+        }
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        @property char[] front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.buffer;
+        }
+
+
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetch the next line into $(D state_.buffer).  $(D state_.empty) is
+         * set to $(D true) if the stream offers no more line.
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert( state_.wantNext);
+            assert(!state_.empty);
+            assert(reader_ != reader_.init);
+        }
+        out
+        {
+            assert( state_.empty || !state_.buffer.empty);
+            assert(!state_.empty ||  state_.buffer.empty);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            // Encode characters into the buffer until encountering the
+            // terminator.
+            state_.buffer.length = 0;
+
+            auto writer = appender(&state_.buffer);
+            assert(writer.data.empty);
+
+            while (!reader_.empty)
+            {
+                immutable dchar c = reader_.front;
+                reader_.popFront();
+
+                putUTF!char(writer, c);
+                if (c == terminator_)
+                    break;
+            }
+
+            state_.empty = writer.data.empty;
+        }
     }
 }
 
