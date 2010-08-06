@@ -96,11 +96,10 @@ void writefln(Format, Args...)(Format format, Args args)
 //     void writef  (format, args...);
 //     void writefln(format, args...);
 //
-//     @property LockingTextReader lockingTextReader();
+//     @property ByDchar byDchar();
+//     @property ByLine  byLine();
 //     String readln(dchar terminator);
 //     size_t readln(ref Char[], dchar terminator);
-//
-//     @property ByLine byLine();
 // }
 //----------------------------------------------------------------------------//
 
@@ -272,19 +271,19 @@ public:
      * Returns an input range for reading $(D dchar)s decoded from a locked
      * file stream in the native character encoding.
      */
-    @property LockingTextReader lockingTextReader()
+    @property ByDchar byDchar()
     {
-        return assumeShared(this).lockingTextReader;
+        return assumeShared(this).byDchar;
     }
 
     /// ditto
-    @property LockingTextReader lockingTextReader() shared
+    @property ByDchar byDchar() shared
     {
-        return LockingTextReader(file_, decoder_);
+        return ByDchar(file_, decoder_);
     }
 
     /// ditto
-    static struct LockingTextReader
+    static struct ByDchar
     {
     private:
         FILELockingByteReader reader_;
@@ -441,10 +440,17 @@ public:
     size_t readln(Char)(ref Char[] buffer, dchar terminator = '\n') shared
         if (isSomeChar!(Char))
     {
-        auto writer = appender(&buffer);
+        buffer.length = 0;
 
-        foreach (dchar c; this.lockingTextReader)
+        auto reader = this.byDchar;
+        auto writer = appender(&buffer);
+        assert(writer.data.empty);
+
+        while (!reader.empty)
         {
+            immutable dchar c = reader.front;
+            reader.popFront();
+
             putUTF!Char(writer, c);
             if (c == terminator)
                 break;
@@ -458,16 +464,16 @@ public:
      */
     @property ByLine byLine(dchar terminator = '\n') shared
     {
-        return ByLine(this.lockingTextReader, terminator);
+        return ByLine(this.byDchar, terminator);
     }
 
     /// ditto
     static struct ByLine
     {
     private:
-        LockingTextReader reader_;
-        dchar             terminator_;
-        State*            state_;
+        ByDchar reader_;
+        dchar   terminator_;
+        State*  state_;
 
         static struct State
         {
@@ -476,7 +482,7 @@ public:
             bool   wantNext = true;
         }
 
-        this(LockingTextReader reader, dchar terminator)
+        this(ByDchar reader, dchar terminator)
         {
             enum size_t BUFFER_SIZE = 80;
 
@@ -556,7 +562,7 @@ public:
             state_.buffer.length = 0;
 
             auto writer = appender(&state_.buffer);
-            assert(writer.data.length == 0);
+            assert(writer.data.empty);
 
             while (!reader_.empty)
             {
@@ -588,12 +594,10 @@ public:
 //     void writef  (format, args...);
 //     void writefln(format, args...);
 //
-//     @property LockingTextReader lockingTextReader();
+//     @property ByDchar byDchar();
+//     @property ByLine  byLine ();
 //     String readln(dchar terminator);
 //     size_t readln(ref Char[], dchar terminator);
-//
-//     @property ByLine   byLine();
-//     @property ByRecord byRecord();
 // }
 //----------------------------------------------------------------------------//
 
@@ -799,19 +803,19 @@ public:
      * Returns an input range for reading $(D dchar)s decoded from a locked
      * file stream in UTF-8 encoding.
      */
-    @property LockingTextReader lockingTextReader()
+    @property ByDchar byDchar()
     {
-        return assumeShared(this).lockingTextReader;
+        return assumeShared(this).byDchar;
     }
 
     /// ditto
-    @property LockingTextReader lockingTextReader() shared
+    @property ByDchar byDchar() shared
     {
-        return LockingTextReader(file_);
+        return ByDchar(file_);
     }
 
     /// ditto
-    static struct LockingTextReader
+    static struct ByDchar
     {
     private:
         FILELockingByteReader byteReader_;
@@ -965,10 +969,10 @@ public:
         if (isSomeChar!(Char))
     {
         buffer.length = 0;
-        auto writer = appender(&buffer);
-        auto reader = this.lockingTextReader;
 
-        assert(writer.length == 0);
+        auto reader = this.byDchar;
+        auto writer = appender(&buffer);
+        assert(writer.data.empty);
 
         while (!reader.empty)
         {
@@ -995,9 +999,9 @@ public:
     static struct ByLine
     {
     private:
-        LockingTextReader reader_;
-        dchar             terminator_;
-        State*            state_;
+        ByDchar reader_;
+        dchar   terminator_;
+        State*  state_;
 
         static struct State
         {
@@ -1013,7 +1017,7 @@ public:
             state_        = new State;
             state_.buffer = new char[](BUFFER_SIZE);
             terminator_   = terminator;
-            reader_       = LockingTextReader(file);
+            reader_       = ByDchar(file);
         }
 
     public:
