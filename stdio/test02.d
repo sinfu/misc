@@ -20,8 +20,8 @@ void main()
 {
     writeln("α-β");
 
-    write("Enter a line: ");
-    writeln(" --> ", stdinText.readln());
+    foreach (line; stdinUTF8.byLine)
+        stdoutText.writeln(" --> ", line.length, " | ", line);
 }
 
 
@@ -99,13 +99,15 @@ void writefln(Format, Args...)(Format format, Args args)
 //     @property LockingTextReader lockingTextReader();
 //     String readln(dchar terminator);
 //     size_t readln(ref Char[], dchar terminator);
+//
+//     @property ByLine byLine();
 // }
 //----------------------------------------------------------------------------//
 
 
 /**
- * Object for writing Unicode text to the standard output in console-safe
- * system encoding.
+ * $(D NativeTextIOPort) wraps a $(D File) object and provides Unicode-text
+ * I/O against the file in native (or console-safe) character encoding.
  */
 @system struct NativeTextIOPort
 {
@@ -121,9 +123,6 @@ public:
 
     /**
      * Constructs a $(D NativeTextIOPort) on an open $(D File).
-     *
-     * Params:
-     *  file = An open $(D File) to perform native text I/O on.
      *
      * Throws:
      *  $(D Exception) if conversion is not supported on the platform.
@@ -183,13 +182,9 @@ public:
         NativeCodesetEncoder  encoder_;
         File                  reference_;
 
-        /*
-         * Params:
-         *  file    = This object is holded by the $(D LockingTextWriter)
-         *            object for maintaining the reference counter associated
-         *            with $(D file).
-         *  encoder = The string _encoder to use.
-         */
+        // The File object where I/O is performed is holded in this range
+        // object so that File's reference counting correctly works.
+
         this(ref shared File file, ref shared NativeCodesetEncoder encoder)
         {
             // Enter a critical section.
@@ -238,7 +233,7 @@ public:
 
         foreach (i, Arg; Args)
         {
-            static if (__traits(compiles, writer.put(args[i]) ))
+            static if (isSomeString!(Arg) || is(Arg == dchar))
                 writer.put(args[i]);
             else
                 std.format.formattedWrite(writer, "%s", args[i]);
@@ -274,8 +269,8 @@ public:
     //----------------------------------------------------------------//
 
     /**
-     * Returns an output range for reading text from a locked file stream in
-     * the native character encoding.
+     * Returns an input range for reading $(D dchar)s decoded from a locked
+     * file stream in the native character encoding.
      */
     @property LockingTextReader lockingTextReader()
     {
@@ -304,16 +299,6 @@ public:
             bool  wantNext = true;
         }
 
-
-        /*
-         * Constructs a $(D LockingTextReader) object.
-         *
-         * Params:
-         *  file    = This object is holded by the $(D LockingTextReader)
-         *            object for maintaining the reference counter associated
-         *            with $(D file).
-         *  decoder = A character _decoder to use.
-         */
         this(ref shared File file, ref shared NativeCodesetDecoder decoder)
         {
             state_ = new State;
@@ -466,6 +451,126 @@ public:
         }
         return writer.data.length;
     }
+
+
+    /**
+     * Returns an input range for reading text by line.
+     */
+    @property ByLine byLine(dchar terminator = '\n') shared
+    {
+        return ByLine(this.lockingTextReader, terminator);
+    }
+
+    /// ditto
+    static struct ByLine
+    {
+    private:
+        LockingTextReader reader_;
+        dchar             terminator_;
+        State*            state_;
+
+        static struct State
+        {
+            char[] buffer;
+            bool   empty;
+            bool   wantNext = true;
+        }
+
+        this(LockingTextReader reader, dchar terminator)
+        {
+            enum size_t BUFFER_SIZE = 80;
+
+            state_        = new State;
+            state_.buffer = new char[](BUFFER_SIZE);
+            terminator_   = terminator;
+            reader_       = reader;
+        }
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        @property char[] front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.buffer;
+        }
+
+
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetch the next line into $(D state_.buffer).  $(D state_.empty) is
+         * set to $(D true) if the stream offers no more line.
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert( state_.wantNext);
+            assert(!state_.empty);
+            assert(reader_ != reader_.init);
+        }
+        out
+        {
+            assert( state_.empty || !state_.buffer.empty);
+            assert(!state_.empty ||  state_.buffer.empty);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            // Encode characters into the buffer until encountering the
+            // terminator.
+            state_.buffer.length = 0;
+
+            auto writer = appender(&state_.buffer);
+            assert(writer.data.length == 0);
+
+            while (!reader_.empty)
+            {
+                immutable dchar c = reader_.front;
+                reader_.popFront();
+
+                putUTF!char(writer, c);
+                if (c == terminator_)
+                    break;
+            }
+
+            state_.empty = writer.data.empty;
+        }
+    }
 }
 
 
@@ -486,11 +591,15 @@ public:
 //     @property LockingTextReader lockingTextReader();
 //     String readln(dchar terminator);
 //     size_t readln(ref Char[], dchar terminator);
+//
+//     @property ByLine   byLine();
+//     @property ByRecord byRecord();
 // }
 //----------------------------------------------------------------------------//
 
 /**
- * Object for writing Unicode text to a $(D File) in UTF-8 encoding.
+ * $(D UTF8TextIOPort) wraps a $(D File) object and provides text I/O against
+ * the file in UTF-8 encoding.
  */
 @system struct UTF8TextIOPort
 {
@@ -504,9 +613,6 @@ public:
 
     /**
      * Constructs a $(D UTF8TextIOPort) on an open $(D File).
-     *
-     * Params:
-     *  file = An open $(D File) to perform UTF-8 text I/O on.
      */
     this(File file)
     {
@@ -520,7 +626,7 @@ public:
 
     /**
      * Returns an output range for writing text to a locked file stream in
-     * the UTF-8 encoding.
+     * UTF-8 encoding.
      */
     @property LockingTextWriter lockingTextWriter()
     {
@@ -542,9 +648,6 @@ public:
         int                   orientation_;
         File                  reference_;
 
-        /**
-         * Constructs a $(D LockingTextWriter) object on an open $(D file).
-         */
         this(ref shared File file)
         {
             auto handle = file.handle;
@@ -564,7 +667,7 @@ public:
 
     public:
         //----------------------------------------------------------------//
-        // Range primitive implementations.
+        // Range primitive implementations
         //----------------------------------------------------------------//
 
         /**
@@ -657,7 +760,7 @@ public:
 
         foreach (i, Arg; Args)
         {
-            static if (__traits(compiles, writer.put(args[i]) ))
+            static if (isSomeString!(Arg) || is(Arg == dchar))
                 writer.put(args[i]);
             else
                 std.format.formattedWrite(writer, "%s", args[i]);
@@ -693,8 +796,8 @@ public:
     //----------------------------------------------------------------//
 
     /**
-     * Returns an output range for reading text from a locked file stream in
-     * the native character encoding.
+     * Returns an input range for reading $(D dchar)s decoded from a locked
+     * file stream in UTF-8 encoding.
      */
     @property LockingTextReader lockingTextReader()
     {
@@ -724,10 +827,6 @@ public:
             bool  wantNext = true;
         }
 
-
-        /*
-         * Constructs a $(D LockingTextReader) object.
-         */
         this(ref shared File file)
         {
             state_ = new State;
@@ -865,15 +964,462 @@ public:
     size_t readln(Char)(ref Char[] buffer, dchar terminator = '\n') shared
         if (isSomeChar!(Char))
     {
+        buffer.length = 0;
         auto writer = appender(&buffer);
+        auto reader = this.lockingTextReader;
 
-        foreach (dchar c; this.lockingTextReader)
+        assert(writer.length == 0);
+
+        while (!reader.empty)
         {
+            immutable dchar c = reader.front;
+            reader.popFront();
+
             putUTF!Char(writer, c);
             if (c == terminator)
                 break;
         }
         return writer.data.length;
+    }
+
+
+    /**
+     * Returns an input range for reading text by line.
+     */
+    @property ByLine byLine(dchar terminator = '\n') shared
+    {
+        return ByLine(file_, terminator);
+    }
+
+    /// ditto
+    static struct ByLine
+    {
+    private:
+        LockingTextReader reader_;
+        dchar             terminator_;
+        State*            state_;
+
+        static struct State
+        {
+            char[] buffer;
+            bool   empty;
+            bool   wantNext = true;
+        }
+
+        this(ref shared File file, dchar terminator)
+        {
+            enum size_t BUFFER_SIZE = 80;
+
+            state_        = new State;
+            state_.buffer = new char[](BUFFER_SIZE);
+            terminator_   = terminator;
+            reader_       = LockingTextReader(file);
+        }
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        @property char[] front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.buffer;
+        }
+
+
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetch the next line into $(D state_.buffer).  $(D state_.empty) is
+         * set to $(D true) if the stream offers no more line.
+         *
+         * XXX: efficient readlnImpl() could be used.
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert(!state_.empty);
+            assert( state_.wantNext);
+            assert(reader_ != reader_.init);
+        }
+        out
+        {
+            assert( state_.empty || !state_.buffer.empty);
+            assert(!state_.empty ||  state_.buffer.empty);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            // Encode characters to the buffer until encountering the
+            // terminator.
+            state_.buffer.length = 0;
+
+            auto writer = appender(&state_.buffer);
+            assert(writer.data.length == 0);
+
+            while (!reader_.empty)
+            {
+                immutable dchar c = reader_.front;
+                reader_.popFront();
+
+                putUTF!char(writer, c);
+                if (c == terminator_)
+                    break;
+            }
+
+            state_.empty = writer.data.empty;
+        }
+    }
+}
+
+
+//----------------------------------------------------------------------------//
+// BinaryIOPort
+//----------------------------------------------------------------------------//
+// struct BinaryIOPort
+// {
+//     this(File file);
+//
+// shared:
+//     @property LockingByteReader   byByte();
+//     @property LockingChunkReader  byChunk();
+//     @property LockingBinaryWriter binaryWriter();
+//
+//     T[]  rawRead(T[] buffer);
+//     void rawWrite(in T[] data);
+// }
+//----------------------------------------------------------------------------//
+
+/**
+ * Struct for performing raw binary I/O against a $(D File) object.
+ */
+@system struct BinaryIOPort
+{
+private:
+    File file_;
+
+public:
+    //----------------------------------------------------------------//
+    // Constructor
+    //----------------------------------------------------------------//
+
+    /**
+     * Constructs a $(D BinaryIOPort) on an open $(D File).
+     */
+    this(File file)
+    {
+        enforce(file.isOpen);
+        enforce(core.stdc.wchar_.fwide(file.handle, 0) <= 0);
+        file_ = file;
+    }
+
+
+    //----------------------------------------------------------------//
+    // Raw binary writing capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an output range for writing binary data to a locked file stream.
+     */
+    @property LockingBinaryWriter binaryWriter() shared
+    {
+        return LockingBinaryWriter(file_);
+    }
+
+    /// ditto
+    static struct LockingBinaryWriter
+    {
+    private:
+        FILELocker       locker_;
+        FILEBinmodeScope binmode_;
+        File             reference_;
+
+        this(ref shared File file)
+        in
+        {
+            assert(file.isOpen);
+            assert(core.stdc.wchar_.fwide(file.handle, 0) <= 0);
+        }
+        body
+        {
+            locker_    = FILELocker(file.handle);
+            binmode_   = FILEBinmodeScope(file.handle);
+            reference_ = assumeUnshared(file);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Range primitive implementations.
+        //----------------------------------------------------------------//
+
+        /**
+         * Writes entire $(D data), an array of $(D E)s, to the stream.
+         */
+        void put(T : E[], E)(T data)
+        {
+            for (E[] rest = data; !rest.empty; )
+            {
+                immutable size_t consumed =
+                    core.stdc.stdio.fwrite(
+                            rest.ptr, E.sizeof, rest.length, locker_.handle);
+
+                if (consumed < rest.length)
+                    rest = rest[consumed .. $];
+                else
+                    break;
+
+                if (core.stdc.stdio.ferror(locker_.handle))
+                {
+                    switch (errno)
+                    {
+                      case EINTR:
+                        core.stdc.stdio.clearerr(locker_.handle);
+                        continue;
+
+                      default:
+                        throw new ErrnoException("");
+                    }
+                    assert(0);
+                }
+            }
+        }
+
+
+        /**
+         * Writes a value $(D datum) to the stream.
+         */
+        void put(T)(T datum)
+        {
+            this.put( (&datum)[0 .. 1] );
+        }
+    }
+
+
+    /**
+     *
+     */
+    void rawWrite(T)(T data)
+    {
+        auto writer = this.binaryWriter;
+
+        writer.put(data);
+    }
+
+
+    //----------------------------------------------------------------//
+    // Raw binary reading capabilities
+    //----------------------------------------------------------------//
+
+    /**
+     * Returns an input range for reading raw $(D ubyte)s from the file stream.
+     */
+    @property LockingByteReader byByte() shared
+    {
+        return LockingByteReader(file_);
+    }
+
+    /// ditto
+    static struct LockingByteReader
+    {
+    private:
+        FILELockingByteReader reader_;
+        FILEBinmodeScope      binmode_;
+        File                  reference_;
+
+        this(ref shared File file)
+        {
+            auto handle = file.handle;
+
+            reader_    = FILELockingByteReader(handle);
+            binmode_   = FILEBinmodeScope(handle);
+            reference_ = assumeUnshared(file);
+        }
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        {
+            return reader_.empty;
+        }
+
+        @property ubyte front()
+        {
+            return reader_.front;
+        }
+
+        void popFront()
+        {
+            reader_.popFront();
+        }
+    }
+
+
+    /**
+     * Returns an input range for reading raw $(D ubyte)s from the file stream
+     * by chunk of fixed size $(D chunkSize).
+     */
+    @property LockingChunkReader byChunk(size_t chunkSize = 8192) shared
+    {
+        enforce(chunkSize > 0);
+        return LockingChunkReader(file_, chunkSize);
+    }
+
+    /// ditto
+    static struct LockingChunkReader
+    {
+    private:
+        FILELocker       locker_;
+        ubyte[]          buffer_;
+        State*           state_;
+        File             reference_;
+        FILEBinmodeScope binmode_;
+
+        static struct State
+        {
+            bool empty;
+            bool wantNext = true;
+        }
+
+        this(ref shared File file, size_t chunkSize)
+        in
+        {
+            assert(file.isOpen);
+            assert(core.stdc.wchar_.fwide(file.handle, 0) <= 0);
+            assert(chunkSize > 0);
+        }
+        body
+        {
+            state_  = new State;
+            buffer_ = new ubyte[](chunkSize);
+        }
+
+
+    public:
+        //----------------------------------------------------------------//
+        // Input range primitives
+        //----------------------------------------------------------------//
+
+        @property bool empty()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return state_.empty;
+        }
+
+
+        @property ubyte[] front()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            return buffer_;
+        }
+
+
+        void popFront()
+        in
+        {
+            assert(state_ != null);
+        }
+        body
+        {
+            if (state_.wantNext)
+                popFrontLazy();
+            state_.wantNext = true;
+        }
+
+
+        /*
+         * Fetches the next chunk (if any) into $(D buffer_).
+         */
+        private void popFrontLazy()
+        in
+        {
+            assert(state_ != null);
+            assert(state_.wantNext);
+        }
+        body
+        {
+            scope(success) state_.wantNext = false;
+
+            for (ubyte[] rem = buffer_; !rem.empty; )
+            {
+                immutable size_t consumed =
+                    core.stdc.stdio.fread(
+                            rem.ptr, 1, rem.length, locker_.handle);
+
+                if (consumed < rem.length)
+                    rem = rem[consumed .. $];
+                else
+                    break;
+
+                if (core.stdc.stdio.feof(locker_.handle))
+                {
+                    buffer_      = buffer_[0 .. $ - rem.length];
+                    state_.empty = buffer_.empty;
+                    break;
+                }
+                else if (core.stdc.stdio.ferror(locker_.handle))
+                {
+                    switch (errno)
+                    {
+                      case EINTR:
+                        core.stdc.stdio.clearerr(locker_.handle);
+                        continue;
+
+                      default:
+                        throw new ErrnoException("");
+                    }
+                    assert(0);
+                }
+            }
+        }
     }
 }
 
@@ -892,6 +1438,7 @@ public:
 //     @property int   fileno();
 //
 //     @property bool  isOpen();
+//     @property bool  eof();
 //     void            open(string name, in char[] openMode);
 //     void            close();
 //
@@ -901,6 +1448,10 @@ public:
 //     void            flush();
 //     void            setvbuf(size_t   size, int mode);
 //     void            setvbuf(void[] buffer, int mode);
+//
+//     fpos_t          seek(fpos_t offset, int origin);
+//     fpos_t          tell();
+//     void            rewind();
 // }
 //----------------------------------------------------------------------------//
 
@@ -1043,6 +1594,15 @@ public:
     /**
      *
      */
+    @property bool eof() shared
+    {
+        return core.stdc.stdio.feof(impl.handle) != 0;
+    }
+
+
+    /**
+     *
+     */
     void open(string path, in char[] openMode)
     {
         assert(0, "not implemented");
@@ -1141,6 +1701,37 @@ public:
 
         core.stdc.stdio.setvbuf(
                 handle, cast(char*) buffer.ptr, mode, buffer.length);
+    }
+
+
+    //----------------------------------------------------------------//
+    // FILE interface: seek
+    //----------------------------------------------------------------//
+
+    /**
+     *
+     */
+    fpos_t seek(fpos_t offset, int origin = SEEK_SET)
+    {
+        return core.stdc.stdio.fseek(impl.handle, offset, origin);
+    }
+
+
+    /**
+     *
+     */
+    fpos_t tell()
+    {
+        return core.stdc.stdio.ftell(impl.handle);
+    }
+
+
+    /**
+     *
+     */
+    void rewind()
+    {
+        core.stdc.stdio.rewind(impl.handle);
     }
 }
 
