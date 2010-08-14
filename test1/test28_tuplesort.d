@@ -47,16 +47,8 @@ template MergeSort(alias less, items...)
         }
     }
 
-    template Split(items...)
-    {
-        static if (items.length < 2)
-            alias items Split;
-        else
-            alias TypeTuple!(items[0], Split!(items[2 .. $])) Split;
-    }
-
-    alias Merge!(MergeSort!(less, Split!(items        )).result)
-          .With!(MergeSort!(less, Split!(items[1 .. $])).result) result;
+    alias Merge!(MergeSort!(less, items[  0 .. $/2]).result)
+          .With!(MergeSort!(less, items[$/2 .. $  ]).result) result;
 }
 
 
